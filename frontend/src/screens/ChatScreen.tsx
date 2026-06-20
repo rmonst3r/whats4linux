@@ -348,7 +348,7 @@ export function ChatListScreen({ onOpenSettings }: ChatListScreenProps) {
           let senderForUpdate = data.sender
           if (data.reaction) {
             previewText = `${data.sender} reacted ${data.reaction} to: "${previewText}"`
-            senderForUpdate = "" 
+            senderForUpdate = ""
           }
 
           // Update only this specific chat - no full re-fetch needed!
