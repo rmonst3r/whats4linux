@@ -833,8 +833,18 @@ func (ms *MessageStore) GetMessageWithMediaByID(messageID string) (*ExtendedMess
 }
 
 // GetChatList returns the chat list from messages.db
+// GetChatList returns the regular chat list (channels/broadcast excluded).
 func (ms *MessageStore) GetChatList() []ChatMessage {
-	rows, err := ms.db.Query(query.SelectDecodedChatList)
+	return ms.chatListFromQuery(query.SelectDecodedChatList)
+}
+
+// GetChannelList returns only Channel (newsletter) feeds.
+func (ms *MessageStore) GetChannelList() []ChatMessage {
+	return ms.chatListFromQuery(query.SelectDecodedChannelList)
+}
+
+func (ms *MessageStore) chatListFromQuery(q string) []ChatMessage {
+	rows, err := ms.db.Query(q)
 	if err != nil {
 		log.Println("Failed to query chat list:", err)
 		return []ChatMessage{}

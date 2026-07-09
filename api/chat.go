@@ -63,6 +63,26 @@ func (a *Api) GetChatList() ([]ChatElement, error) {
 	return ce, nil
 }
 
+// GetChannelList returns the followed Channels (newsletter feeds), named via
+// their newsletter metadata.
+func (a *Api) GetChannelList() ([]ChatElement, error) {
+	cmList := a.messageStore.GetChannelList()
+	ce := make([]ChatElement, len(cmList))
+	for i, cm := range cmList {
+		name := cm.JID.User
+		if info, err := a.waClient.GetNewsletterInfo(a.ctx, cm.JID); err == nil && info != nil && info.ThreadMeta.Name.Text != "" {
+			name = info.ThreadMeta.Name.Text
+		}
+		ce[i] = ChatElement{
+			LatestMessage: cm.MessageText,
+			LatestTS:      cm.MessageTime,
+			Sender:        cm.Sender,
+			Contact:       Contact{JID: cm.JID.String(), FullName: name},
+		}
+	}
+	return ce, nil
+}
+
 func (a *Api) SendChatPresence(jid string, cp types.ChatPresence, cpm types.ChatPresenceMedia) error {
 	parsedJid, err := types.ParseJID(jid)
 	if err != nil {
