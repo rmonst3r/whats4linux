@@ -1,13 +1,17 @@
-import { useState, useEffect } from "react"
+import { useState, useEffect, useRef } from "react"
 import { store } from "../../../wailsjs/go/models"
 import { GetCachedImage, DownloadMedia } from "../../../wailsjs/go/api/Api"
 
 // TODO: fix word wrap for longer words in content
 
+// GIFs (WhatsApp sends them as short muted videos) loop a few times then stop.
+const MAX_GIF_LOOPS = 3
+
 interface MediaContentProps {
   message: store.DecodedMessage
   type: "image" | "video" | "sticker" | "audio" | "document"
   chatId: string
+  isGif?: boolean
   sentMediaCache?: React.MutableRefObject<Map<string, string>>
   onImageClick?: (src: string) => void
   onDownload?: () => void
@@ -17,6 +21,7 @@ export function MediaContent({
   message,
   type,
   chatId,
+  isGif,
   sentMediaCache,
   onImageClick,
   onDownload,
@@ -24,6 +29,7 @@ export function MediaContent({
   const [mediaSrc, setMediaSrc] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
   const [showDownloadButton, setShowDownloadButton] = useState(false)
+  const gifLoopsRef = useRef(0)
 
   const loadFromCache = async () => {
     if (loading) return
@@ -78,6 +84,15 @@ export function MediaContent({
     }
   }
 
+  // GIFs should start on their own like a real GIF, so fetch eagerly.
+  // Regular videos still wait for a user click.
+  useEffect(() => {
+    if (type === "video" && isGif && !mediaSrc && !loading) {
+      handleDownload()
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [type, isGif, message.Info.ID])
+
   if (mediaSrc) {
     if (type === "image" || type === "sticker") {
       return (
@@ -113,7 +128,37 @@ export function MediaContent({
         </div>
       )
     }
-    if (type === "video") return <video src={mediaSrc} controls className="max-w-full rounded-lg" />
+    if (type === "video")
+      return isGif ? (
+        <video
+          src={mediaSrc}
+          autoPlay
+          muted
+          playsInline
+          onEnded={e => {
+            if (gifLoopsRef.current < MAX_GIF_LOOPS - 1) {
+              gifLoopsRef.current += 1
+              const v = e.currentTarget
+              v.currentTime = 0
+              void v.play().catch(() => {})
+            }
+          }}
+          onClick={e => {
+            // Replay from the start when clicked, even after it has stopped.
+            const v = e.currentTarget
+            gifLoopsRef.current = 0
+            v.currentTime = 0
+            void v.play().catch(() => {})
+          }}
+          className="block min-w-75 max-w-82.5 max-h-100 rounded-lg cursor-pointer"
+        />
+      ) : (
+        <video
+          src={mediaSrc}
+          controls
+          className="block min-w-75 max-w-82.5 max-h-100 rounded-lg"
+        />
+      )
     if (type === "audio") return <audio src={mediaSrc} controls className="w-full" />
   }
 
@@ -123,7 +168,7 @@ export function MediaContent({
         <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-green-500" />
       ) : (
         <button
-          onClick={type === "video" || type === "audio" ? handleDownload : loadFromCache}
+          onClick={handleDownload}
           className="bg-black/50 p-3 rounded-full text-white hover:bg-black/70"
         >
           <svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor">
