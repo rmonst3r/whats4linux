@@ -112,12 +112,19 @@ const ChatListItemContent = memo(({ chat, isSelected, onSelect }: ChatListItemCo
             : "yesterday"}
         </span>
       </div>
-      <div className="text-sm text-gray-500 dark:text-gray-400 truncate [&_p]:inline [&_p]:m-0 ">
-        {chat.sender && chat.type === "group" && <span className="mr-1">{chat.sender}: </span>}
-        <span
-          className="[&_br]:hidden no-formatting"
-          dangerouslySetInnerHTML={{ __html: chat.subtitle }}
-        />
+      <div className="flex items-center gap-2">
+        <div className="flex-1 text-sm text-gray-500 dark:text-gray-400 truncate [&_p]:inline [&_p]:m-0 ">
+          {chat.sender && chat.type === "group" && <span className="mr-1">{chat.sender}: </span>}
+          <span
+            className="[&_br]:hidden no-formatting"
+            dangerouslySetInnerHTML={{ __html: chat.subtitle }}
+          />
+        </div>
+        {chat.unreadCount ? (
+          <span className="shrink-0 min-w-5 h-5 px-1.5 flex items-center justify-center rounded-full bg-blue-500 text-white text-xs font-semibold">
+            {chat.unreadCount > 99 ? "99+" : chat.unreadCount}
+          </span>
+        ) : null}
       </div>
     </div>
   </div>
@@ -334,7 +341,14 @@ export function ChatListScreen({ onOpenSettings }: ChatListScreenProps) {
         timestamp: number
         sender: string
         reaction?: string
+        isFromMe?: boolean
       }) => {
+        // Mark an incoming message unread unless it belongs to the chat that's
+        // currently open. Read state via getState() to avoid a stale closure.
+        if (!data.isFromMe && useChatStore.getState().selectedChatId !== data.chatId) {
+          useChatStore.getState().incrementUnreadCount(data.chatId)
+        }
+
         if (!initialFetchDoneRef.current) {
           // If we haven't done initial fetch, do a full fetch
           setTimeout(fetchChats, 500)

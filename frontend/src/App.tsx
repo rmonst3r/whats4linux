@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react"
-import { Login, GetCustomCSS, GetCustomJS } from "../wailsjs/go/api/Api"
+import { Login, GetCustomCSS, GetCustomJS, SetWindowFocused } from "../wailsjs/go/api/Api"
 import { EventsOn } from "../wailsjs/runtime/runtime"
 import QRCode from "qrcode"
 import { ChatListScreen } from "./screens/ChatScreen"
@@ -32,6 +32,20 @@ function App() {
       }
     }
   }, [theme, loaded])
+
+  // Keep the backend informed of window focus so it only notifies when the
+  // window is in the background.
+  useEffect(() => {
+    const onFocus = () => SetWindowFocused(true)
+    const onBlur = () => SetWindowFocused(false)
+    window.addEventListener("focus", onFocus)
+    window.addEventListener("blur", onBlur)
+    SetWindowFocused(document.hasFocus())
+    return () => {
+      window.removeEventListener("focus", onFocus)
+      window.removeEventListener("blur", onBlur)
+    }
+  }, [])
 
   useEffect(() => {
     Login()
