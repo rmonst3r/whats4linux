@@ -1,6 +1,8 @@
 package api
 
 import (
+	"log"
+
 	"go.mau.fi/whatsmeow/types"
 )
 
@@ -19,24 +21,36 @@ func (a *Api) GetChatList() ([]ChatElement, error) {
 		if cm.JID.Server == types.GroupServer {
 			groupInfo, err := a.cw.FetchGroup(cm.JID.String())
 			if err != nil {
-				return nil, err
-			}
-			fc = Contact{
-				JID:      cm.JID.String(),
-				FullName: groupInfo.Name,
+				// A single unknown/left group must not blank the whole chat
+				// list. Fall back to the JID so the chat still renders.
+				log.Println("GetChatList: group lookup failed, using fallback:", cm.JID.String(), err)
+				fc = Contact{
+					JID:      cm.JID.String(),
+					FullName: cm.JID.User,
+				}
+			} else {
+				fc = Contact{
+					JID:      cm.JID.String(),
+					FullName: groupInfo.Name,
+				}
 			}
 		} else {
 			contact, err := a.waClient.Store.Contacts.GetContact(a.ctx, cm.JID)
 			if err != nil {
-				return nil, err
-			}
-
-			fc = Contact{
-				JID:        cm.JID.String(),
-				Short:      contact.FirstName,
-				FullName:   contact.FullName,
-				PushName:   contact.PushName,
-				IsBusiness: contact.BusinessName != "",
+				// Same here: degrade to the JID rather than failing everything.
+				log.Println("GetChatList: contact lookup failed, using fallback:", cm.JID.String(), err)
+				fc = Contact{
+					JID:      cm.JID.String(),
+					PushName: cm.JID.User,
+				}
+			} else {
+				fc = Contact{
+					JID:        cm.JID.String(),
+					Short:      contact.FirstName,
+					FullName:   contact.FullName,
+					PushName:   contact.PushName,
+					IsBusiness: contact.BusinessName != "",
+				}
 			}
 		}
 		ce[i] = ChatElement{
