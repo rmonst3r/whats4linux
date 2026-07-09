@@ -187,8 +187,9 @@ func (a *Api) mainEventHandler(evt any) {
 		}
 
 		// Raise a desktop notification for genuine incoming messages (not our
-		// own, not reactions) while the window is in the background.
-		if messageID != "" && !v.Info.IsFromMe && v.Message.GetReactionMessage() == nil && !a.windowFocused.Load() {
+		// own, not reactions, not channel/broadcast posts) while backgrounded.
+		isFeed := v.Info.Chat.Server == types.NewsletterServer || v.Info.Chat.Server == types.BroadcastServer
+		if messageID != "" && !v.Info.IsFromMe && !isFeed && v.Message.GetReactionMessage() == nil && !a.windowFocused.Load() {
 			go a.notifyIncoming(v, parsedHTML)
 		}
 

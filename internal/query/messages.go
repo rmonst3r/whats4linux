@@ -108,6 +108,8 @@ const (
 	) AS m
 	LEFT JOIN message_media AS mm ON mm.message_id = m.message_id
 	WHERE rn = 1
+	  AND m.chat_jid NOT LIKE '%@newsletter'
+	  AND m.chat_jid NOT LIKE '%@broadcast'
 	ORDER BY m.timestamp DESC;
 	`
 
