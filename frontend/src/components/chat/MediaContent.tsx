@@ -113,7 +113,14 @@ export function MediaContent({
         </div>
       )
     }
-    if (type === "video") return <video src={mediaSrc} controls className="max-w-full rounded-lg" />
+    if (type === "video")
+      return (
+        <video
+          src={mediaSrc}
+          controls
+          className="block min-w-75 max-w-82.5 max-h-100 rounded-lg"
+        />
+      )
     if (type === "audio") return <audio src={mediaSrc} controls className="w-full" />
   }
 
@@ -123,7 +130,7 @@ export function MediaContent({
         <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-green-500" />
       ) : (
         <button
-          onClick={type === "video" || type === "audio" ? handleDownload : loadFromCache}
+          onClick={handleDownload}
           className="bg-black/50 p-3 rounded-full text-white hover:bg-black/70"
         >
           <svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor">
