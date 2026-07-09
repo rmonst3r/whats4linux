@@ -4,6 +4,7 @@ import { DownloadImageToFile } from "../../../wailsjs/go/api/Api"
 import { MediaContent } from "./MediaContent"
 import { QuotedMessage } from "./QuotedMessage"
 import { ReactionBubble } from "./Reactions"
+import { LinkPreview } from "./LinkPreview"
 import clsx from "clsx"
 import { MessageMenu } from "./MessageMenu"
 import { ClockPendingIcon, BlueTickIcon, ForwardedIcon } from "../../assets/svgs/chat_icons"
@@ -143,8 +144,15 @@ export function MessageItem({
   const renderContent = () => {
     if (!content) return <span className="italic opacity-50">Empty Message</span>
     else if (content.conversation || content.extendedTextMessage?.text) {
-      const htmlContent = content.conversation || content.extendedTextMessage?.text
-      return <div className="pr-5" dangerouslySetInnerHTML={{ __html: htmlContent }} />
+      const htmlContent = content.conversation || content.extendedTextMessage?.text || ""
+      return (
+        <>
+          <div className="pr-5" dangerouslySetInnerHTML={{ __html: htmlContent }} />
+          {htmlContent.includes('class="msg-link"') && (
+            <LinkPreview messageId={message.Info.ID} />
+          )}
+        </>
+      )
     } else if (content.imageMessage)
       return (
         <div className="flex flex-col">
