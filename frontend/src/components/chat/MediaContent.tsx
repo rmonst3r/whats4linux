@@ -153,11 +153,7 @@ export function MediaContent({
           className="block min-w-75 max-w-82.5 max-h-100 rounded-lg cursor-pointer"
         />
       ) : (
-        <video
-          src={mediaSrc}
-          controls
-          className="block min-w-75 max-w-82.5 max-h-100 rounded-lg"
-        />
+        <video src={mediaSrc} controls className="block min-w-75 max-w-82.5 max-h-100 rounded-lg" />
       )
     if (type === "audio") return <audio src={mediaSrc} controls className="w-full" />
   }
