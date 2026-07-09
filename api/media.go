@@ -17,6 +17,17 @@ import (
 	"go.mau.fi/whatsmeow/types"
 )
 
+// GetVideoThumbnail returns the message's embedded preview image as a data URL,
+// or an empty string if none was stored. Lets the UI show a video preview + play
+// button without downloading the full video.
+func (a *Api) GetVideoThumbnail(messageID string) string {
+	thumb := a.messageStore.GetThumbnail(messageID)
+	if len(thumb) == 0 {
+		return ""
+	}
+	return "data:image/jpeg;base64," + base64.StdEncoding.EncodeToString(thumb)
+}
+
 func (a *Api) DownloadMedia(chatJID string, messageID string) (string, error) {
 	msg, err := a.messageStore.GetMessageWithMedia(chatJID, messageID)
 	if err != nil || msg == nil {
@@ -27,8 +38,18 @@ func (a *Api) DownloadMedia(chatJID string, messageID string) (string, error) {
 	width, height := msg.Media.GetDimensions()
 
 	mediaType := msg.Media.GetMediaType()
-	if mediaType == whatsmeow.MediaImage && mime == "" {
-		mime = "image/jpeg"
+	if mime == "" {
+		// A correct MIME is required or <video>/<audio> won't play the data URL.
+		switch mediaType {
+		case whatsmeow.MediaImage:
+			mime = "image/jpeg"
+		case whatsmeow.MediaVideo:
+			mime = "video/mp4"
+		case whatsmeow.MediaAudio:
+			mime = "audio/ogg"
+		default:
+			mime = "application/octet-stream"
+		}
 	}
 	data, err := a.waClient.Download(a.ctx, msg.Media)
 	if err != nil {
@@ -43,7 +64,8 @@ func (a *Api) DownloadMedia(chatJID string, messageID string) (string, error) {
 		}
 	}
 
-	return base64.StdEncoding.EncodeToString(data), nil
+	// Return a ready-to-use data URL with the correct MIME.
+	return "data:" + mime + ";base64," + base64.StdEncoding.EncodeToString(data), nil
 }
 
 // downloadMedia downloads media from a message and returns data, mime, width, height

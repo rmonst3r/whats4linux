@@ -142,9 +142,12 @@ func NewMessageStore() (*MessageStore, error) {
 		if err != nil {
 			return err
 		}
-		// Migrate pre-existing tables: add gif_playback if missing. Ignore the
-		// "duplicate column name" error that occurs once the column exists.
+		// Migrate pre-existing tables: add gif_playback / thumbnail if missing.
+		// Ignore the "duplicate column name" error once the column exists.
 		if _, aerr := tx.Exec(query.AddGifPlaybackColumn); aerr != nil && !strings.Contains(aerr.Error(), "duplicate column") {
+			return aerr
+		}
+		if _, aerr := tx.Exec(query.AddThumbnailColumn); aerr != nil && !strings.Contains(aerr.Error(), "duplicate column") {
 			return aerr
 		}
 		_, err = tx.Exec(query.CreatePinnedMessagesTable)
@@ -512,6 +515,15 @@ func (ms *MessageStore) InsertMessage(info *types.MessageInfo, msg *waE2E.Messag
 	// nil-safe and returns false for non-video messages.
 	gifPlayback := msg.GetVideoMessage().GetGifPlayback()
 
+	// Embedded preview thumbnail (WhatsApp ships a small JPEG in the message) so
+	// videos show a preview + play button in the list without downloading them.
+	var thumbnail []byte
+	if v := msg.GetVideoMessage(); v != nil {
+		thumbnail = v.GetJPEGThumbnail()
+	} else if i := msg.GetImageMessage(); i != nil {
+		thumbnail = i.GetJPEGThumbnail()
+	}
+
 	if parsedHTML != "" {
 		text = parsedHTML
 	}
@@ -549,6 +561,7 @@ func (ms *MessageStore) InsertMessage(info *types.MessageInfo, msg *waE2E.Messag
 			width, height,
 			fileName,
 			gifPlayback,
+			thumbnail,
 		)
 		return err
 	})
@@ -1202,6 +1215,16 @@ func (ms *MessageStore) isGifPlayback(messageID string) bool {
 		return false
 	}
 	return gif.Bool
+}
+
+// GetThumbnail returns the stored preview JPEG bytes for a message, or nil if
+// none was stored (e.g. messages synced before the thumbnail column existed).
+func (ms *MessageStore) GetThumbnail(messageID string) []byte {
+	var thumb []byte
+	if err := ms.db.QueryRow(query.SelectThumbnailByMessageID, messageID).Scan(&thumb); err != nil {
+		return nil
+	}
+	return thumb
 }
 
 // GetDecodedMessage returns a single decoded message from messages.db

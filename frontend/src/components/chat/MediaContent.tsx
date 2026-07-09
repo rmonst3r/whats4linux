@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from "react"
 import { store } from "../../../wailsjs/go/models"
-import { GetCachedImage, DownloadMedia } from "../../../wailsjs/go/api/Api"
+import { GetCachedImage, DownloadMedia, GetVideoThumbnail } from "../../../wailsjs/go/api/Api"
 
 // TODO: fix word wrap for longer words in content
 
@@ -29,16 +29,31 @@ export function MediaContent({
   const [mediaSrc, setMediaSrc] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
   const [showDownloadButton, setShowDownloadButton] = useState(false)
+  const [thumbnailSrc, setThumbnailSrc] = useState<string | null>(null)
   const gifLoopsRef = useRef(0)
+  const placeholderRef = useRef<HTMLDivElement | null>(null)
 
-  const loadFromCache = async () => {
-    if (loading) return
+  const loadFromCache = async (): Promise<string | null> => {
+    if (loading) return null
     setLoading(true)
     try {
       const imagePath = await GetCachedImage(message.Info.ID)
-      if (imagePath) {
-        setMediaSrc(imagePath)
-      }
+      if (imagePath) setMediaSrc(imagePath)
+      return imagePath || null
+    } catch (e) {
+      return null
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const handleDownload = async () => {
+    if (loading) return
+    setLoading(true)
+    try {
+      // DownloadMedia returns a ready-to-use data URL with the correct MIME.
+      const dataUrl = await DownloadMedia(chatId, message.Info.ID)
+      setMediaSrc(dataUrl)
     } catch (e) {
     } finally {
       setLoading(false)
@@ -51,15 +66,67 @@ export function MediaContent({
 
     if (messageBody?._tempImage) {
       setMediaSrc(messageBody._tempImage)
-    } else if (messageBody?._tempFile) {
+      return
+    }
+    if (messageBody?._tempFile) {
       const blobUrl = URL.createObjectURL(messageBody._tempFile)
       setMediaSrc(blobUrl)
-    } else if (sentMediaCache?.current.has(message.Info.ID)) {
+      return
+    }
+    if (sentMediaCache?.current.has(message.Info.ID)) {
       setMediaSrc(sentMediaCache.current.get(message.Info.ID)!)
-    } else if (type === "image" || type === "sticker") {
+      return
+    }
+    if (type === "image" || type === "sticker") {
+      // Show instantly if cached; otherwise the IntersectionObserver below
+      // fetches it once it's actually on screen.
       loadFromCache()
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [message.Info.ID, type])
+
+  // Auto-download image/sticker media once it's visible on screen — covers both
+  // "already visible when the chat opens" and "scrolled into view". Debounced so
+  // rows blazed past during a fast scroll don't fetch.
+  useEffect(() => {
+    const autoLoads = type === "image" || type === "sticker" || (type === "video" && isGif)
+    if (mediaSrc || !autoLoads) return
+    const el = placeholderRef.current
+    if (!el) return
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const obs = new IntersectionObserver(
+      ([entry]) => {
+        if (entry.isIntersecting) {
+          timer = setTimeout(() => handleDownload(), 200)
+        } else if (timer) {
+          clearTimeout(timer)
+          timer = undefined
+        }
+      },
+      { rootMargin: "150px", threshold: 0.01 },
+    )
+    obs.observe(el)
+    return () => {
+      obs.disconnect()
+      if (timer) clearTimeout(timer)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mediaSrc, type, isGif, message.Info.ID])
+
+  // Fetch the embedded preview for regular videos so the list shows a thumbnail
+  // + play button without downloading the whole video. (GIFs auto-play instead.)
+  useEffect(() => {
+    if (type !== "video" || isGif || mediaSrc) return
+    let cancelled = false
+    GetVideoThumbnail(message.Info.ID)
+      .then(url => {
+        if (!cancelled && url) setThumbnailSrc(url)
+      })
+      .catch(() => {})
+    return () => {
+      cancelled = true
+    }
+  }, [type, isGif, mediaSrc, message.Info.ID])
 
   useEffect(() => {
     // Cleanup blob URLs when component unmounts or mediaSrc changes
@@ -70,28 +137,6 @@ export function MediaContent({
     }
   }, [mediaSrc])
 
-  const handleDownload = async () => {
-    if (loading) return
-    setLoading(true)
-    try {
-      const data = await DownloadMedia(chatId, message.Info.ID)
-      setMediaSrc(
-        `data:${(message.Content as any)?.[`${type}Message`]?.mimetype || "application/octet-stream"};base64,${data}`,
-      )
-    } catch (e) {
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  // GIFs should start on their own like a real GIF, so fetch eagerly.
-  // Regular videos still wait for a user click.
-  useEffect(() => {
-    if (type === "video" && isGif && !mediaSrc && !loading) {
-      handleDownload()
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [type, isGif, message.Info.ID])
 
   if (mediaSrc) {
     if (type === "image" || type === "sticker") {
@@ -158,8 +203,34 @@ export function MediaContent({
     if (type === "audio") return <audio src={mediaSrc} controls className="w-full" />
   }
 
+  // Video placeholder: show the embedded thumbnail (if any) with a play button
+  // so it's clearly a video, and only download the full file on click.
+  if (type === "video") {
+    return (
+      <div
+        ref={placeholderRef}
+        onClick={handleDownload}
+        className="relative w-64 h-64 rounded-lg overflow-hidden bg-gray-300 dark:bg-gray-800 flex items-center justify-center cursor-pointer bg-cover bg-center"
+        style={thumbnailSrc ? { backgroundImage: `url(${thumbnailSrc})` } : undefined}
+      >
+        {loading ? (
+          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-white" />
+        ) : (
+          <div className="bg-black/55 rounded-full p-3">
+            <svg viewBox="0 0 24 24" width="28" height="28" fill="white">
+              <path d="M8 5v14l11-7z" />
+            </svg>
+          </div>
+        )}
+      </div>
+    )
+  }
+
   return (
-    <div className="w-64 h-64 bg-gray-200 dark:bg-gray-800 rounded-lg flex items-center justify-center">
+    <div
+      ref={placeholderRef}
+      className="w-64 h-64 bg-gray-200 dark:bg-gray-800 rounded-lg flex items-center justify-center"
+    >
       {loading ? (
         <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-green-500" />
       ) : (
