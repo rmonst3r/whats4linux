@@ -3,7 +3,9 @@ package api
 import (
 	"encoding/base64"
 	"fmt"
+	"html"
 	"log"
+	"regexp"
 	"strings"
 	"time"
 
@@ -85,6 +87,113 @@ func (a *Api) FetchMessagesPaged(jid string, limit int, beforeTimestamp int64, b
 		return nil, err
 	}
 	return messages, nil
+}
+
+// brRE turns <br> tags into newlines when converting stored HTML back to text.
+var brRE = regexp.MustCompile(`(?i)<br\s*/?>`)
+
+// htmlToPlain converts the stored HTML message text back to plain text so a
+// forwarded message doesn't arrive full of markup. (The DB keeps the parsed
+// HTML used for rendering, not the original plain text.)
+func htmlToPlain(s string) string {
+	s = brRE.ReplaceAllString(s, "\n")
+	s = htmlTagRE.ReplaceAllString(s, "")
+	return html.UnescapeString(s)
+}
+
+// ForwardMessage forwards a stored message to another chat. Media is
+// re-downloaded and re-uploaded (forward-by-reference proved unreliable) and
+// text/captions are converted back to plain text. The forwarded flag is set.
+func (a *Api) ForwardMessage(fromChatJID, messageID, toChatJID string) error {
+	toJID, err := types.ParseJID(toChatJID)
+	if err != nil {
+		return err
+	}
+	src, err := a.messageStore.GetMessageWithMedia(fromChatJID, messageID)
+	if err != nil || src == nil {
+		return fmt.Errorf("message not found")
+	}
+
+	fwd := &waE2E.ContextInfo{
+		IsForwarded:     proto.Bool(true),
+		ForwardingScore: proto.Uint32(1),
+	}
+	caption := htmlToPlain(src.Text)
+
+	var msg *waE2E.Message
+
+	if src.Media == nil {
+		if caption == "" {
+			return fmt.Errorf("nothing to forward")
+		}
+		msg = &waE2E.Message{ExtendedTextMessage: &waE2E.ExtendedTextMessage{
+			Text: proto.String(caption), ContextInfo: fwd,
+		}}
+	} else {
+		data, err := a.waClient.Download(a.ctx, src.Media)
+		if err != nil {
+			return fmt.Errorf("download failed: %v", err)
+		}
+		mediaType := src.Media.GetMediaType()
+		uploaded, err := a.waClient.Upload(a.ctx, data, mediaType)
+		if err != nil {
+			return fmt.Errorf("upload failed: %v", err)
+		}
+		mime := src.Media.GetMimetype()
+
+		switch mediaType {
+		case whatsmeow.MediaImage:
+			if mime == "" {
+				mime = "image/jpeg"
+			}
+			w, h := src.Media.GetDimensions()
+			msg = &waE2E.Message{ImageMessage: &waE2E.ImageMessage{
+				URL: &uploaded.URL, DirectPath: &uploaded.DirectPath, MediaKey: uploaded.MediaKey,
+				FileEncSHA256: uploaded.FileEncSHA256, FileSHA256: uploaded.FileSHA256,
+				FileLength: &uploaded.FileLength, Mimetype: &mime, Caption: proto.String(caption),
+				Width: proto.Uint32(uint32(w)), Height: proto.Uint32(uint32(h)), ContextInfo: fwd,
+			}}
+		case whatsmeow.MediaVideo:
+			if mime == "" {
+				mime = "video/mp4"
+			}
+			msg = &waE2E.Message{VideoMessage: &waE2E.VideoMessage{
+				URL: &uploaded.URL, DirectPath: &uploaded.DirectPath, MediaKey: uploaded.MediaKey,
+				FileEncSHA256: uploaded.FileEncSHA256, FileSHA256: uploaded.FileSHA256,
+				FileLength: &uploaded.FileLength, Mimetype: &mime, Caption: proto.String(caption),
+				ContextInfo: fwd,
+			}}
+		case whatsmeow.MediaAudio:
+			if mime == "" {
+				mime = "audio/ogg"
+			}
+			msg = &waE2E.Message{AudioMessage: &waE2E.AudioMessage{
+				URL: &uploaded.URL, DirectPath: &uploaded.DirectPath, MediaKey: uploaded.MediaKey,
+				FileEncSHA256: uploaded.FileEncSHA256, FileSHA256: uploaded.FileSHA256,
+				FileLength: &uploaded.FileLength, Mimetype: &mime, ContextInfo: fwd,
+			}}
+		case whatsmeow.MediaDocument:
+			if mime == "" {
+				mime = "application/octet-stream"
+			}
+			doc := &waE2E.DocumentMessage{
+				URL: &uploaded.URL, DirectPath: &uploaded.DirectPath, MediaKey: uploaded.MediaKey,
+				FileEncSHA256: uploaded.FileEncSHA256, FileSHA256: uploaded.FileSHA256,
+				FileLength: &uploaded.FileLength, Mimetype: &mime, Caption: proto.String(caption),
+				ContextInfo: fwd,
+			}
+			if dec, derr := a.messageStore.GetDecodedMessage(fromChatJID, messageID); derr == nil &&
+				dec.Content != nil && dec.Content.DocumentMessage != nil && dec.Content.DocumentMessage.FileName != "" {
+				doc.FileName = proto.String(dec.Content.DocumentMessage.FileName)
+			}
+			msg = &waE2E.Message{DocumentMessage: doc}
+		default:
+			return fmt.Errorf("cannot forward this media type")
+		}
+	}
+
+	_, err = a.waClient.SendMessage(a.ctx, toJID, msg)
+	return err
 }
 
 // DeleteMessageForMe removes a message from the local database only (the other

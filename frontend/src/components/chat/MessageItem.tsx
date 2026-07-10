@@ -14,6 +14,7 @@ import { MediaContent } from "./MediaContent"
 import { QuotedMessage } from "./QuotedMessage"
 import { ReactionBubble } from "./Reactions"
 import { LinkPreview } from "./LinkPreview"
+import { ForwardDialog } from "./ForwardDialog"
 import clsx from "clsx"
 import { MessageMenu } from "./MessageMenu"
 import {
@@ -116,6 +117,7 @@ export function MessageItem({
   const removeMessage = useMessageStore(state => state.removeMessage)
   const [showDeleteDialog, setShowDeleteDialog] = useState(false)
   const [deleting, setDeleting] = useState(false)
+  const [showForwardDialog, setShowForwardDialog] = useState(false)
   const [showReactionPicker, setShowReactionPicker] = useState(false)
   const [showFullEmoji, setShowFullEmoji] = useState(false)
   // Derived directly from the message; no state/effect needed (a state+effect
@@ -169,6 +171,8 @@ export function MessageItem({
   }
 
   const isPinned = pinnedIds?.has(message.Info.ID) ?? false
+
+  const handleForward = () => setShowForwardDialog(true)
 
   const handlePin = () => {
     SetMessagePinned(chatId, message.Info.Sender, message.Info.ID, isFromMe, !isPinned).catch(err =>
@@ -573,6 +577,14 @@ export function MessageItem({
           </div>,
           document.body,
         )}
+
+      {showForwardDialog && (
+        <ForwardDialog
+          fromChatId={chatId}
+          messageId={message.Info.ID}
+          onClose={() => setShowForwardDialog(false)}
+        />
+      )}
     </>
   )
 }
