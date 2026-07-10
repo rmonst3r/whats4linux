@@ -1,21 +1,31 @@
 package api
 
 import (
+	"bytes"
 	"encoding/base64"
 	"fmt"
+	"image"
+	_ "image/gif"
+	"image/jpeg"
+	_ "image/png"
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
+	"time"
 
 	"github.com/gen2brain/beeep"
 	"github.com/lugvitc/whats4linux/internal/store"
+	"github.com/nfnt/resize"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/types"
+	"golang.org/x/net/html"
 )
 
 // LinkPreviewResult is the link preview surfaced to the frontend.
@@ -457,4 +467,137 @@ func (a *Api) DownloadImageToFile(messageID string) error {
 		}
 	}()
 	return nil
+}
+
+// urlRE finds the first http(s) URL in a message so we can attach a preview.
+var urlRE = regexp.MustCompile(`https?://[^\s<>"']+`)
+
+// linkMeta is the Open-Graph metadata used to attach a link preview on send.
+type linkMeta struct {
+	url, title, description string
+	thumbnail               []byte
+}
+
+// fetchLinkMeta fetches a page and extracts its title/description/preview image
+// (Open Graph, with sensible fallbacks). Returns nil if nothing useful is found.
+func fetchLinkMeta(rawURL string) *linkMeta {
+	client := &http.Client{Timeout: 5 * time.Second}
+	req, err := http.NewRequest("GET", rawURL, nil)
+	if err != nil {
+		return nil
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; whats4linux/1.0)")
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20)) // cap at 1MB of HTML
+	if err != nil {
+		return nil
+	}
+
+	meta := &linkMeta{url: rawURL}
+	var ogImage string
+	if doc, perr := html.Parse(bytes.NewReader(body)); perr == nil {
+		var walk func(*html.Node)
+		walk = func(n *html.Node) {
+			if n.Type == html.ElementNode {
+				switch n.Data {
+				case "meta":
+					var prop, name, content string
+					for _, a := range n.Attr {
+						switch strings.ToLower(a.Key) {
+						case "property":
+							prop = strings.ToLower(a.Val)
+						case "name":
+							name = strings.ToLower(a.Val)
+						case "content":
+							content = a.Val
+						}
+					}
+					key := prop + "|" + name
+					switch {
+					case strings.Contains(key, "og:title"), strings.Contains(key, "twitter:title"):
+						if meta.title == "" {
+							meta.title = content
+						}
+					case strings.Contains(key, "og:description"), strings.Contains(key, "twitter:description"), name == "description":
+						if meta.description == "" {
+							meta.description = content
+						}
+					case strings.Contains(key, "og:image"), strings.Contains(key, "twitter:image"):
+						if ogImage == "" {
+							ogImage = content
+						}
+					}
+				case "title":
+					if meta.title == "" && n.FirstChild != nil {
+						meta.title = strings.TrimSpace(n.FirstChild.Data)
+					}
+				}
+			}
+			for c := n.FirstChild; c != nil; c = c.NextSibling {
+				walk(c)
+			}
+		}
+		walk(doc)
+	}
+
+	if meta.title == "" {
+		return nil
+	}
+	if ogImage != "" {
+		meta.thumbnail = fetchThumbnail(resolveURL(rawURL, ogImage))
+	}
+	return meta
+}
+
+// resolveURL resolves a (possibly relative) image URL against the page URL.
+func resolveURL(base, ref string) string {
+	b, err := url.Parse(base)
+	if err != nil {
+		return ref
+	}
+	r, err := url.Parse(ref)
+	if err != nil {
+		return ref
+	}
+	return b.ResolveReference(r).String()
+}
+
+// fetchThumbnail downloads an image and returns a small JPEG suitable for a
+// WhatsApp inline link-preview thumbnail.
+func fetchThumbnail(imgURL string) []byte {
+	client := &http.Client{Timeout: 5 * time.Second}
+	req, err := http.NewRequest("GET", imgURL, nil)
+	if err != nil {
+		return nil
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; whats4linux/1.0)")
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil
+	}
+	data, err := io.ReadAll(io.LimitReader(resp.Body, 5<<20))
+	if err != nil {
+		return nil
+	}
+	img, _, err := image.Decode(bytes.NewReader(data))
+	if err != nil {
+		return nil
+	}
+	thumb := resize.Thumbnail(300, 300, img, resize.Lanczos3)
+	var buf bytes.Buffer
+	if err := jpeg.Encode(&buf, thumb, &jpeg.Options{Quality: 70}); err != nil {
+		return nil
+	}
+	return buf.Bytes()
 }

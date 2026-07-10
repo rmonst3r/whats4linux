@@ -603,20 +603,39 @@ func (a *Api) SendMessage(chatJID string, content MessageContent) (string, error
 
 		mentionedJIDs := content.Mentions
 
-		// If we have mentions or quoted context, use ExtendedTextMessage
-		if len(mentionedJIDs) > 0 || contextInfo != nil {
+		// Fetch a link preview if the message contains a URL, so the card shows
+		// for both sender and recipient (WhatsApp attaches it to the message).
+		var lm *linkMeta
+		if u := urlRE.FindString(content.Text); u != "" {
+			lm = fetchLinkMeta(u)
+		}
+
+		// If we have mentions, quoted context, or a link preview, use
+		// ExtendedTextMessage.
+		if len(mentionedJIDs) > 0 || contextInfo != nil || lm != nil {
 			if contextInfo == nil {
 				contextInfo = &waE2E.ContextInfo{}
 			}
 			if len(mentionedJIDs) > 0 {
 				contextInfo.MentionedJID = mentionedJIDs
 			}
-			msgContent = &waE2E.Message{
-				ExtendedTextMessage: &waE2E.ExtendedTextMessage{
-					Text:        &content.Text,
-					ContextInfo: contextInfo,
-				},
+			etm := &waE2E.ExtendedTextMessage{
+				Text:        &content.Text,
+				ContextInfo: contextInfo,
 			}
+			if lm != nil {
+				etm.MatchedText = proto.String(lm.url)
+				if lm.title != "" {
+					etm.Title = proto.String(lm.title)
+				}
+				if lm.description != "" {
+					etm.Description = proto.String(lm.description)
+				}
+				if len(lm.thumbnail) > 0 {
+					etm.JPEGThumbnail = lm.thumbnail
+				}
+			}
+			msgContent = &waE2E.Message{ExtendedTextMessage: etm}
 		} else {
 			msgContent = &waE2E.Message{
 				Conversation: &content.Text,
