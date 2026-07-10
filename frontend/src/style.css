@@ -260,8 +260,12 @@ video::-webkit-media-controls-fullscreen-button {
 
 /* Status story progress bar fill. */
 @keyframes storyFill {
-  from { width: 0%; }
-  to { width: 100%; }
+  from {
+    width: 0%;
+  }
+  to {
+    width: 100%;
+  }
 }
 .story-active-bar {
   animation-name: storyFill;

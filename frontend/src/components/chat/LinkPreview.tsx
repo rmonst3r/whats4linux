@@ -52,9 +52,7 @@ export function LinkPreview({ messageId }: { messageId: string }) {
       onClick={() => preview.url && BrowserOpenURL(preview.url)}
       className="mt-1 max-w-72 overflow-hidden rounded-lg bg-black/10 dark:bg-black/25 cursor-pointer"
     >
-      {image && (
-        <img src={image} alt="" className="w-full max-h-64 object-contain bg-black/20" />
-      )}
+      {image && <img src={image} alt="" className="w-full max-h-64 object-contain bg-black/20" />}
       <div className="p-2">
         {preview.title && (
           <div className="text-sm font-medium line-clamp-2 leading-snug">{preview.title}</div>
@@ -62,7 +60,9 @@ export function LinkPreview({ messageId }: { messageId: string }) {
         {preview.description && (
           <div className="mt-0.5 text-xs opacity-70 line-clamp-2">{preview.description}</div>
         )}
-        {domain && <div className="mt-1 text-[10px] uppercase tracking-wide opacity-50">{domain}</div>}
+        {domain && (
+          <div className="mt-1 text-[10px] uppercase tracking-wide opacity-50">{domain}</div>
+        )}
       </div>
     </div>
   )

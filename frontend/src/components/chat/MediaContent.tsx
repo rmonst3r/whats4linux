@@ -159,7 +159,6 @@ export function MediaContent({
     }
   }, [mediaSrc])
 
-
   if (mediaSrc) {
     if (type === "image" || type === "sticker") {
       return (

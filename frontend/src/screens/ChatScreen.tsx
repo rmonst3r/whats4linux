@@ -1,6 +1,11 @@
 import { useEffect, useRef, useCallback, memo } from "react"
 import clsx from "clsx"
-import { GetChatList, GetChannelList, GetCachedAvatar, GetSelfAvatar } from "../../wailsjs/go/api/Api"
+import {
+  GetChatList,
+  GetChannelList,
+  GetCachedAvatar,
+  GetSelfAvatar,
+} from "../../wailsjs/go/api/Api"
 import { api } from "../../wailsjs/go/models"
 import { EventsOn } from "../../wailsjs/runtime/runtime"
 import { ChatDetail } from "./ChatDetail"

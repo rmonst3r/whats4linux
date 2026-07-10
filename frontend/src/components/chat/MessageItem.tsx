@@ -105,9 +105,7 @@ export function MessageItem({
 
   const handleReact = () => setShowReactionPicker(v => !v)
 
-  const myReaction = (reactions as any[]).find(r => isMe(r.sender_id))?.emoji as
-    | string
-    | undefined
+  const myReaction = (reactions as any[]).find(r => isMe(r.sender_id))?.emoji as string | undefined
 
   const sendReaction = (emoji: string) => {
     // Tapping the emoji you already reacted with removes it (WhatsApp behaviour).
@@ -171,9 +169,7 @@ export function MessageItem({
       return (
         <>
           <div className="pr-5" dangerouslySetInnerHTML={{ __html: htmlContent }} />
-          {htmlContent.includes('class="msg-link"') && (
-            <LinkPreview messageId={message.Info.ID} />
-          )}
+          {htmlContent.includes('class="msg-link"') && <LinkPreview messageId={message.Info.ID} />}
         </>
       )
     } else if (content.imageMessage)
@@ -334,7 +330,13 @@ export function MessageItem({
 
           {showFullEmoji && (
             <div className="absolute bottom-9 z-9999" style={isFromMe ? { right: 0 } : { left: 0 }}>
-              <Suspense fallback={<div className="rounded bg-white p-2 text-xs shadow dark:bg-dark-tertiary">Loading…</div>}>
+              <Suspense
+                fallback={
+                  <div className="rounded bg-white p-2 text-xs shadow dark:bg-dark-tertiary">
+                    Loading…
+                  </div>
+                }
+              >
                 <EmojiPicker
                   data={emojiData}
                   onEmojiSelect={(e: any) => sendReaction(e.native)}

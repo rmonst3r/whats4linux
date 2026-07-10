@@ -45,7 +45,9 @@ export function StatusList({ onOpen }: { onOpen: (g: StatusGroup) => void }) {
         }
         result.push({ sender, name, items })
       }
-      result.sort((a, b) => last(b.items).Info.Timestamp.localeCompare(last(a.items).Info.Timestamp))
+      result.sort((a, b) =>
+        last(b.items).Info.Timestamp.localeCompare(last(a.items).Info.Timestamp),
+      )
       if (!cancelled) {
         setGroups(result)
         setLoading(false)
@@ -163,14 +165,26 @@ export function StoryViewer({ group, onClose }: { group: StatusGroup; onClose: (
 
       <div className="flex items-center justify-between px-4 pb-2 text-white">
         <div className="font-medium">{group.name}</div>
-        <button onClick={onClose} className="text-2xl leading-none hover:text-white/70" title="Close (Esc)">
+        <button
+          onClick={onClose}
+          className="text-2xl leading-none hover:text-white/70"
+          title="Close (Esc)"
+        >
           ×
         </button>
       </div>
 
       <div className="relative flex flex-1 items-center justify-center overflow-hidden">
-        <button onClick={prev} className="absolute left-0 top-0 z-10 h-full w-1/3" aria-label="Previous" />
-        <button onClick={next} className="absolute right-0 top-0 z-10 h-full w-1/3" aria-label="Next" />
+        <button
+          onClick={prev}
+          className="absolute left-0 top-0 z-10 h-full w-1/3"
+          aria-label="Previous"
+        />
+        <button
+          onClick={next}
+          className="absolute right-0 top-0 z-10 h-full w-1/3"
+          aria-label="Next"
+        />
 
         {kind === "text" && (
           <div

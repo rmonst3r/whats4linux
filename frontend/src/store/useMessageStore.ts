@@ -10,12 +10,7 @@ interface MessageStore {
   addMessage: (chatId: string, message: any) => void
   prependMessages: (chatId: string, messages: any[]) => void
   updateMessage: (chatId: string, message: any) => void
-  addReactionToMessage: (
-    chatId: string,
-    messageId: string,
-    emoji: string,
-    senderId: string,
-  ) => void
+  addReactionToMessage: (chatId: string, messageId: string, emoji: string, senderId: string) => void
   clearMessages: (chatId: string) => void
   trimOldMessages: (chatId: string, keepCount: number) => void
   addPendingMessage: (chatId: string, message: any) => void
