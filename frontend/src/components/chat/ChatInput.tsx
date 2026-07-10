@@ -8,7 +8,11 @@ import {
   UserAvatar,
 } from "../../assets/svgs/chat_icons"
 import { store } from "../../../wailsjs/go/models"
-import { GetCachedAvatar } from "../../../wailsjs/go/api/Api"
+import {
+  GetCachedAvatar,
+  StartVoiceRecording,
+  CancelVoiceRecording,
+} from "../../../wailsjs/go/api/Api"
 import { useContactStore } from "../../store/useContactStore"
 import { PollDialog } from "./PollDialog"
 import { ContactShareDialog } from "./ContactShareDialog"
@@ -38,6 +42,7 @@ interface ChatInputProps {
   onCancelReply: () => void
   onMentionAdd: (contact: any) => void
   selectedMentions: any[]
+  onStopVoiceNote: () => void
 }
 
 const FILE_TYPE_ICONS = {
@@ -135,6 +140,7 @@ export function ChatInput({
   onCancelReply,
   onMentionAdd,
   selectedMentions,
+  onStopVoiceNote,
 }: ChatInputProps) {
   const [mentionSuggestions, setMentionSuggestions] = useState<any[]>([])
   const [attachMenuOpen, setAttachMenuOpen] = useState(false)
@@ -231,6 +237,55 @@ export function ChatInput({
   }
 
   const hasContent = inputText.trim() || pastedImage || selectedFile
+
+  // --- Voice-note recording (captured on the backend via ffmpeg, since
+  // WebKitGTK denies the WebView microphone permission) -------------------
+  const [recording, setRecording] = useState(false)
+  const [recSeconds, setRecSeconds] = useState(0)
+  const recTimerRef = useRef<number | null>(null)
+
+  const clearRecTimer = () => {
+    if (recTimerRef.current) {
+      clearInterval(recTimerRef.current)
+      recTimerRef.current = null
+    }
+  }
+
+  const startRecording = async () => {
+    try {
+      await StartVoiceRecording()
+      setRecording(true)
+      setRecSeconds(0)
+      recTimerRef.current = window.setInterval(() => setRecSeconds(s => s + 1), 1000)
+    } catch (e) {
+      console.error("Failed to start recording:", e)
+    }
+  }
+
+  const cancelRecording = () => {
+    clearRecTimer()
+    setRecording(false)
+    setRecSeconds(0)
+    CancelVoiceRecording().catch(() => {})
+  }
+
+  const finishRecording = () => {
+    clearRecTimer()
+    setRecording(false)
+    setRecSeconds(0)
+    onStopVoiceNote()
+  }
+
+  // Discard any in-progress recording if the component unmounts.
+  useEffect(
+    () => () => {
+      clearRecTimer()
+      CancelVoiceRecording().catch(() => {})
+    },
+    [],
+  )
+
+  const fmtRec = (s: number) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`
   const [senderName, setSenderName] = useState<string>("")
   const [senderColor, setSenderColor] = useState<string>("")
   const [loadingSenderName, setLoadingSenderName] = useState<boolean>(false)
@@ -408,7 +463,7 @@ export function ChatInput({
       )}
       {/* Main input row: rounded pill (emoji left, attach right) with the
           send button as a separate circle outside, WhatsApp-style. */}
-      <div className="flex items-end gap-2">
+      <div className={clsx("flex items-end gap-2", recording && "hidden")}>
         <div className="flex flex-1 items-center rounded-full border border-gray-200 bg-light-bg px-1.5 dark:border-transparent dark:bg-[#242626]">
           {/* Emoji Button */}
           <IconButton ref={emojiButtonRef} onClick={onToggleEmojiPicker} title="Emoji">
@@ -536,18 +591,54 @@ export function ChatInput({
           />
         </div>
 
-        {/* Send Button — separate green circle outside the pill */}
-        <button
-          onClick={onSendMessage}
-          disabled={!hasContent}
-          className={clsx(
-            "mb-0.5 flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-white transition-colors",
-            hasContent ? "bg-green hover:bg-green/80" : "bg-green/50 cursor-not-allowed",
-          )}
-        >
-          <SendIcon />
-        </button>
+        {/* Send / Mic Button — separate green circle outside the pill */}
+        {hasContent ? (
+          <button
+            onClick={onSendMessage}
+            className="mb-0.5 flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-green text-white transition-colors hover:bg-green/80"
+          >
+            <SendIcon />
+          </button>
+        ) : (
+          <button
+            onClick={startRecording}
+            title="Record voice note"
+            className="mb-0.5 flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-green text-white transition-colors hover:bg-green/80"
+          >
+            <svg viewBox="0 0 24 24" width="24" height="24" className="fill-current">
+              <path d="M12 14a3 3 0 0 0 3-3V5a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3z" />
+              <path d="M17 11a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-3.08A7 7 0 0 0 19 11h-2z" />
+            </svg>
+          </button>
+        )}
       </div>
+
+      {/* Voice-note recording bar (replaces the input row while recording) */}
+      {recording && (
+        <div className="flex items-center gap-3 px-2 py-1">
+          <button
+            onClick={cancelRecording}
+            className="p-2 rounded-full text-red-500 hover:bg-gray-200 dark:hover:bg-gray-700"
+            title="Cancel"
+          >
+            <svg viewBox="0 0 24 24" width="22" height="22" className="fill-current">
+              <path d="M6 7h12l-1 14H7L6 7zm3-3h6l1 2h4v2H2V6h4l1-2z" />
+            </svg>
+          </button>
+          <span className="flex items-center gap-2 text-sm text-gray-600 dark:text-gray-300">
+            <span className="h-2.5 w-2.5 animate-pulse rounded-full bg-red-500" />
+            {fmtRec(recSeconds)}
+          </span>
+          <span className="flex-1 text-xs text-gray-400">Recording… tap send to finish</span>
+          <button
+            onClick={finishRecording}
+            className="p-2 rounded-full bg-green text-white hover:bg-green/70"
+            title="Send voice note"
+          >
+            <SendIcon />
+          </button>
+        </div>
+      )}
 
       {pollOpen && <PollDialog chatId={chatId} onClose={() => setPollOpen(false)} />}
       {contactOpen && <ContactShareDialog chatId={chatId} onClose={() => setContactOpen(false)} />}

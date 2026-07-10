@@ -1,6 +1,7 @@
 import { useEffect, useState, useRef, useCallback, useMemo } from "react"
 import {
   SendMessage,
+  StopVoiceRecording,
   FetchMessagesPaged,
   GetPinnedMessages,
   FetchMessagesAround,
@@ -686,6 +687,31 @@ export function ChatDetail({ chatId, chatName, chatAvatar, onBack, initialSearch
     }
   }
 
+  const handleStopVoiceNote = async () => {
+    try {
+      // Backend records + sends and returns the audio so we can play our own
+      // sent note locally (own sends aren't re-fetched from the server).
+      const dataUrl = await StopVoiceRecording(chatId)
+      const tempId = `temp-${Date.now()}-${Math.random()}`
+      if (dataUrl) sentMediaCache.current.set(tempId, dataUrl)
+      addPendingMessage(chatId, {
+        tempId,
+        isPending: false,
+        Info: {
+          ID: tempId,
+          IsFromMe: true,
+          Timestamp: new Date().toISOString(),
+          PushName: "You",
+          Sender: "",
+        },
+        Content: { audioMessage: { mimetype: "audio/ogg" } },
+      })
+      requestAnimationFrame(() => scrollToBottom(false))
+    } catch (err) {
+      console.error("Failed to send voice note:", err)
+    }
+  }
+
   useEffect(() => {
     const generation = ++requestGenerationRef.current
     loadingMoreRef.current = false
@@ -1023,6 +1049,7 @@ export function ChatDetail({ chatId, chatName, chatAvatar, onBack, initialSearch
           onCancelReply={() => setReplyingTo(null)}
           onMentionAdd={contact => setSelectedMentions(prev => [...prev, contact])}
           selectedMentions={selectedMentions}
+          onStopVoiceNote={handleStopVoiceNote}
         />
       </div>
 

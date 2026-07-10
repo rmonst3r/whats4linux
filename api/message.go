@@ -5,7 +5,10 @@ import (
 	"fmt"
 	"html"
 	"log"
+	"os"
+	"os/exec"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -194,6 +197,198 @@ func (a *Api) ForwardMessage(fromChatJID, messageID, toChatJID string) error {
 
 	_, err = a.waClient.SendMessage(a.ctx, toJID, msg)
 	return err
+}
+
+// probeDurationSeconds returns the rounded duration of a media file (0 on error).
+func probeDurationSeconds(path string) uint32 {
+	out, err := exec.Command("ffprobe", "-v", "error",
+		"-show_entries", "format=duration", "-of", "default=nw=1:nk=1", path).Output()
+	if err != nil {
+		return 0
+	}
+	f, err := strconv.ParseFloat(strings.TrimSpace(string(out)), 64)
+	if err != nil || f < 0 {
+		return 0
+	}
+	return uint32(f + 0.5)
+}
+
+// computeWaveform builds WhatsApp's 64-sample 0-100 amplitude envelope from raw
+// signed-16-bit mono PCM, so the voice note renders with a proper waveform.
+func computeWaveform(pcm []byte) []byte {
+	const buckets = 64
+	n := len(pcm) / 2
+	if n == 0 {
+		return nil
+	}
+	amps := make([]float64, buckets)
+	per := n / buckets
+	if per == 0 {
+		per = 1
+	}
+	var maxAmp float64
+	for b := 0; b < buckets; b++ {
+		start := b * per
+		end := start + per
+		if end > n {
+			end = n
+		}
+		var sum float64
+		cnt := 0
+		for i := start; i < end; i++ {
+			s := int16(uint16(pcm[2*i]) | uint16(pcm[2*i+1])<<8)
+			v := float64(s)
+			if v < 0 {
+				v = -v
+			}
+			sum += v
+			cnt++
+		}
+		if cnt > 0 {
+			amps[b] = sum / float64(cnt)
+		}
+		if amps[b] > maxAmp {
+			maxAmp = amps[b]
+		}
+	}
+	wf := make([]byte, buckets)
+	for b := 0; b < buckets; b++ {
+		if maxAmp > 0 {
+			wf[b] = byte(amps[b] / maxAmp * 100)
+		}
+	}
+	return wf
+}
+
+// StartVoiceRecording begins capturing the default system microphone with
+// ffmpeg as raw PCM (no container, so a stop can't corrupt it). The final
+// Opus/Ogg encode happens in StopVoiceRecording. We record on the backend
+// because WebKitGTK denies the WebView getUserMedia permission.
+func (a *Api) StartVoiceRecording() error {
+	a.voiceMu.Lock()
+	defer a.voiceMu.Unlock()
+	if a.voiceCmd != nil {
+		return fmt.Errorf("already recording")
+	}
+
+	f, err := os.CreateTemp("", "w4l-rec-*.pcm")
+	if err != nil {
+		return err
+	}
+	path := f.Name()
+	f.Close()
+
+	cmd := exec.Command("ffmpeg", "-y",
+		"-f", "pulse", "-i", "default",
+		"-f", "s16le", "-ac", "1", "-ar", "48000", path)
+	cmd.Stderr = os.Stderr // surface ffmpeg errors in the app log
+	if err := cmd.Start(); err != nil {
+		os.Remove(path)
+		return fmt.Errorf("failed to start recorder: %v", err)
+	}
+
+	log.Printf("voice: recording to %s (ffmpeg pid %d)", path, cmd.Process.Pid)
+	a.voiceCmd = cmd
+	a.voicePath = path
+	return nil
+}
+
+// CancelVoiceRecording stops and discards an in-progress recording.
+func (a *Api) CancelVoiceRecording() error {
+	a.voiceMu.Lock()
+	defer a.voiceMu.Unlock()
+	if a.voiceCmd == nil {
+		return nil
+	}
+	_ = a.voiceCmd.Process.Kill()
+	_, _ = a.voiceCmd.Process.Wait()
+	os.Remove(a.voicePath)
+	a.voiceCmd = nil
+	a.voicePath = ""
+	return nil
+}
+
+// StopVoiceRecording finalises the recording and sends it as a voice note (PTT).
+// StopVoiceRecording finalises the recording, sends it as a voice note (PTT),
+// and returns the audio as a data URL so the desktop UI can play it back
+// locally (our own sent messages aren't re-fetched from the server).
+func (a *Api) StopVoiceRecording(chatJID string) (string, error) {
+	a.voiceMu.Lock()
+	cmd := a.voiceCmd
+	path := a.voicePath
+	a.voiceCmd = nil
+	a.voicePath = ""
+	a.voiceMu.Unlock()
+
+	if cmd == nil {
+		return "", fmt.Errorf("not recording")
+	}
+	defer os.Remove(path)
+
+	// Stop the capture. The recording is raw PCM, so a truncated tail is
+	// harmless (there's no container trailer to corrupt).
+	_ = cmd.Process.Signal(os.Interrupt)
+	_ = cmd.Wait()
+
+	if a.waClient.Store.ID == nil {
+		return "", fmt.Errorf("client not logged in")
+	}
+	toJID, err := types.ParseJID(chatJID)
+	if err != nil {
+		return "", err
+	}
+
+	pcm, err := os.ReadFile(path)
+	if err != nil || len(pcm) == 0 {
+		log.Printf("voice: no audio captured (%s, err=%v, bytes=%d)", path, err, len(pcm))
+		return "", fmt.Errorf("no audio captured")
+	}
+
+	// Encode the complete recording to Opus/Ogg in one clean pass (voip mode,
+	// as WhatsApp voice notes use), guaranteeing a well-formed file.
+	oggPath := path + ".ogg"
+	defer os.Remove(oggPath)
+	enc := exec.Command("ffmpeg", "-y",
+		"-f", "s16le", "-ac", "1", "-ar", "48000", "-i", path,
+		"-c:a", "libopus", "-b:a", "32k", "-application", "voip", oggPath)
+	enc.Stderr = os.Stderr
+	if err := enc.Run(); err != nil {
+		log.Printf("voice: encode failed: %v", err)
+		return "", fmt.Errorf("failed to encode voice note: %v", err)
+	}
+
+	ogg, err := os.ReadFile(oggPath)
+	if err != nil || len(ogg) == 0 {
+		return "", fmt.Errorf("encode produced no output")
+	}
+	seconds := probeDurationSeconds(oggPath)
+	waveform := computeWaveform(pcm)
+	log.Printf("voice: encoded %d bytes, %ds; uploading", len(ogg), seconds)
+
+	uploaded, err := a.waClient.Upload(a.ctx, ogg, whatsmeow.MediaAudio)
+	if err != nil {
+		log.Printf("voice: upload failed: %v", err)
+		return "", fmt.Errorf("failed to upload voice note: %v", err)
+	}
+	mime := "audio/ogg; codecs=opus"
+	msg := &waE2E.Message{AudioMessage: &waE2E.AudioMessage{
+		URL: &uploaded.URL, DirectPath: &uploaded.DirectPath, MediaKey: uploaded.MediaKey,
+		FileEncSHA256: uploaded.FileEncSHA256, FileSHA256: uploaded.FileSHA256,
+		FileLength: &uploaded.FileLength, Mimetype: &mime,
+		// WhatsApp mobile validates MediaKeyTimestamp; without it the media can
+		// show as "no longer available" even when the blob is retrievable.
+		MediaKeyTimestamp: proto.Int64(time.Now().Unix()),
+		Seconds:           proto.Uint32(seconds),
+		PTT:               proto.Bool(true),
+		Waveform:          waveform,
+	}}
+
+	if _, err = a.waClient.SendMessage(a.ctx, toJID, msg); err != nil {
+		log.Printf("voice: send failed: %v", err)
+		return "", err
+	}
+	log.Printf("voice: sent to %s", chatJID)
+	return "data:audio/ogg;base64," + base64.StdEncoding.EncodeToString(ogg), nil
 }
 
 // DeleteMessageForMe removes a message from the local database only (the other

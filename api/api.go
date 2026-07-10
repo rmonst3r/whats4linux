@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"os/exec"
 	"regexp"
 	"strings"
 	"sync"
@@ -52,6 +53,11 @@ type Api struct {
 	windowFocused       atomic.Bool
 	groupRepairInFlight atomic.Bool
 	appStateResync      atomic.Bool
+
+	// Voice-note recording (ffmpeg capturing the system mic; see message.go).
+	voiceMu   sync.Mutex
+	voiceCmd  *exec.Cmd
+	voicePath string
 }
 
 // repairGroupNames heals whats4linux_groups rows that are missing or were

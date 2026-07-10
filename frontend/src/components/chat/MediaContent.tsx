@@ -232,6 +232,12 @@ export function MediaContent({
     }
   }, [mediaSrc])
 
+  // Voice notes / audio always render the custom player. When there's no src
+  // yet (a received note not downloaded), the play button fetches it first.
+  if (type === "audio") {
+    return <AudioPlayer src={mediaSrc} loading={loading} onNeedSrc={handleDownload} />
+  }
+
   if (mediaSrc) {
     if (type === "image" || type === "sticker") {
       return (
@@ -305,7 +311,6 @@ export function MediaContent({
       ) : (
         <video src={mediaSrc} controls className="block w-64 h-64 rounded-lg object-cover" />
       )
-    if (type === "audio") return <audio src={mediaSrc} controls className="w-75 h-14" />
   }
 
   // Video placeholder: show the embedded thumbnail (if any) with a play button
@@ -380,6 +385,107 @@ export function MediaContent({
             <path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z" />
           </svg>
         </button>
+      )}
+    </div>
+  )
+}
+
+// A compact WhatsApp-style voice-note player: play/pause, a seekable progress
+// bar and a time readout. `onNeedSrc` fetches the audio on first play when it
+// hasn't been downloaded yet.
+function AudioPlayer({
+  src,
+  loading,
+  onNeedSrc,
+}: {
+  src: string | null
+  loading: boolean
+  onNeedSrc: () => void
+}) {
+  const audioRef = useRef<HTMLAudioElement>(null)
+  const wantPlayRef = useRef(false)
+  const [playing, setPlaying] = useState(false)
+  const [cur, setCur] = useState(0)
+  const [dur, setDur] = useState(0)
+
+  // Auto-play once the src arrives if the user pressed play while it loaded.
+  useEffect(() => {
+    if (src && wantPlayRef.current && audioRef.current) {
+      wantPlayRef.current = false
+      audioRef.current.play().catch(() => {})
+    }
+  }, [src])
+
+  const toggle = () => {
+    if (!src) {
+      wantPlayRef.current = true
+      onNeedSrc()
+      return
+    }
+    const a = audioRef.current
+    if (!a) return
+    if (a.paused) a.play().catch(() => {})
+    else a.pause()
+  }
+
+  const fmt = (s: number) => {
+    if (!isFinite(s) || s < 0) return "0:00"
+    const m = Math.floor(s / 60)
+    const ss = Math.floor(s % 60)
+    return `${m}:${String(ss).padStart(2, "0")}`
+  }
+
+  const pct = dur > 0 && isFinite(dur) ? (cur / dur) * 100 : 0
+
+  return (
+    <div className="flex items-center gap-3 min-w-56 py-1">
+      <button
+        onClick={toggle}
+        className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-green text-white"
+        title={playing ? "Pause" : "Play"}
+      >
+        {loading ? (
+          <span className="h-4 w-4 animate-spin rounded-full border-b-2 border-white" />
+        ) : playing ? (
+          <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor">
+            <path d="M6 5h4v14H6zM14 5h4v14h-4z" />
+          </svg>
+        ) : (
+          <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor">
+            <path d="M8 5v14l11-7z" />
+          </svg>
+        )}
+      </button>
+      <div className="flex-1">
+        <div
+          className="h-1 w-full cursor-pointer rounded-full bg-black/15 dark:bg-white/20"
+          onClick={e => {
+            const a = audioRef.current
+            if (!a || !dur || !isFinite(dur)) return
+            const rect = e.currentTarget.getBoundingClientRect()
+            a.currentTime = ((e.clientX - rect.left) / rect.width) * dur
+          }}
+        >
+          <div className="h-full rounded-full bg-green" style={{ width: `${pct}%` }} />
+        </div>
+        <div className="mt-1 text-[10px] opacity-60">{fmt(cur > 0 || playing ? cur : dur)}</div>
+      </div>
+      {src && (
+        <audio
+          ref={audioRef}
+          src={src}
+          preload="metadata"
+          className="hidden"
+          onPlay={() => setPlaying(true)}
+          onPause={() => setPlaying(false)}
+          onEnded={() => {
+            setPlaying(false)
+            setCur(0)
+          }}
+          onTimeUpdate={e => setCur(e.currentTarget.currentTime)}
+          onLoadedMetadata={e => setDur(e.currentTarget.duration)}
+          onDurationChange={e => setDur(e.currentTarget.duration)}
+        />
       )}
     </div>
   )
