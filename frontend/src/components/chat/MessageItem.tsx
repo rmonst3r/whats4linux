@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo, lazy, Suspense } from "react"
+import { createPortal } from "react-dom"
 import { store } from "../../../wailsjs/go/models"
 import {
   DownloadImageToFile,
@@ -6,6 +7,8 @@ import {
   SaveMediaToFile,
   SendReaction,
   SetMessagePinned,
+  DeleteMessageForMe,
+  DeleteMessageForEveryone,
 } from "../../../wailsjs/go/api/Api"
 import { MediaContent } from "./MediaContent"
 import { QuotedMessage } from "./QuotedMessage"
@@ -110,6 +113,9 @@ export function MessageItem({
   const [senderColor, setSenderColor] = useState<string | undefined>(cachedSender?.senderColor)
   const getSenderInfo = useContactStore(state => state.getSenderInfo)
   const addReactionToMessage = useMessageStore(state => state.addReactionToMessage)
+  const removeMessage = useMessageStore(state => state.removeMessage)
+  const [showDeleteDialog, setShowDeleteDialog] = useState(false)
+  const [deleting, setDeleting] = useState(false)
   const [showReactionPicker, setShowReactionPicker] = useState(false)
   const [showFullEmoji, setShowFullEmoji] = useState(false)
   // Derived directly from the message; no state/effect needed (a state+effect
@@ -168,6 +174,32 @@ export function MessageItem({
     SetMessagePinned(chatId, message.Info.Sender, message.Info.ID, isFromMe, !isPinned).catch(err =>
       console.error("Failed to toggle message pin:", err),
     )
+  }
+
+  const handleDelete = () => setShowDeleteDialog(true)
+
+  const deleteForMe = async () => {
+    setDeleting(true)
+    try {
+      await DeleteMessageForMe(chatId, message.Info.ID)
+      removeMessage(chatId, message.Info.ID)
+    } catch (e) {
+      console.error("Delete for me failed:", e)
+    }
+    setDeleting(false)
+    setShowDeleteDialog(false)
+  }
+
+  const deleteForEveryone = async () => {
+    setDeleting(true)
+    try {
+      await DeleteMessageForEveryone(chatId, message.Info.ID)
+      removeMessage(chatId, message.Info.ID)
+    } catch (e) {
+      console.error("Delete for everyone failed:", e)
+    }
+    setDeleting(false)
+    setShowDeleteDialog(false)
   }
 
   // Fetch group member name + color from the cached store (one RPC per sender,
@@ -500,6 +532,47 @@ export function MessageItem({
           )}
         </div>
       </div>
+
+      {showDeleteDialog &&
+        createPortal(
+          <div
+            className="fixed inset-0 z-[10000] flex items-center justify-center bg-black/40"
+            onClick={() => !deleting && setShowDeleteDialog(false)}
+          >
+            <div
+              className="w-80 rounded-2xl bg-white dark:bg-dark-secondary p-5 shadow-xl"
+              onClick={e => e.stopPropagation()}
+            >
+              <p className="mb-5 text-[15px] text-gray-800 dark:text-gray-100">Delete message?</p>
+              <div className="flex flex-col gap-2">
+                {isFromMe && !isPending && (
+                  <button
+                    disabled={deleting}
+                    onClick={deleteForEveryone}
+                    className="rounded-full px-4 py-2 text-sm font-medium text-red-600 dark:text-red-400 hover:bg-gray-100 dark:hover:bg-dark-tertiary disabled:opacity-50"
+                  >
+                    Delete for everyone
+                  </button>
+                )}
+                <button
+                  disabled={deleting}
+                  onClick={deleteForMe}
+                  className="rounded-full px-4 py-2 text-sm font-medium text-teal-600 dark:text-teal-400 hover:bg-gray-100 dark:hover:bg-dark-tertiary disabled:opacity-50"
+                >
+                  Delete for me
+                </button>
+                <button
+                  disabled={deleting}
+                  onClick={() => setShowDeleteDialog(false)}
+                  className="rounded-full px-4 py-2 text-sm text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-dark-tertiary disabled:opacity-50"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          </div>,
+          document.body,
+        )}
     </>
   )
 }

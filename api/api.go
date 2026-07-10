@@ -405,6 +405,22 @@ func (a *Api) mainEventHandler(evt any) {
 	}
 	switch v := evt.(type) {
 	case *events.Message:
+		// Remote deletion (revoke): drop the message locally and tell the UI,
+		// then stop — it isn't a normal message to render.
+		if protoMsg := v.Message.GetProtocolMessage(); protoMsg != nil && protoMsg.GetType() == waE2E.ProtocolMessage_REVOKE {
+			revokedID := protoMsg.GetKey().GetID()
+			if revokedID != "" {
+				if err := a.messageStore.DeleteMessage(revokedID); err != nil {
+					log.Println("Failed to delete revoked message:", err)
+				}
+				runtime.EventsEmit(a.ctx, "wa:message_deleted", map[string]any{
+					"chatId":    v.Info.Chat.String(),
+					"messageId": revokedID,
+				})
+			}
+			return
+		}
+
 		parsedHTML := a.processMessageText(v.Message)
 
 		// Handle message edits: re-parse the edited content

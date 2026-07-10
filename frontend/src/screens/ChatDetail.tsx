@@ -56,6 +56,7 @@ export function ChatDetail({ chatId, chatName, chatAvatar, onBack, initialSearch
     setActiveChatId,
     addPendingMessage,
     updatePendingMessageToSent,
+    removeMessage,
   } = useMessageStore()
   const { setTypingIndicator, showEmojiPicker, setShowEmojiPicker, chatInfoOpen, setChatInfoOpen } =
     useUIStore()
@@ -763,6 +764,15 @@ export function ChatDetail({ chatId, chatName, chatAvatar, onBack, initialSearch
 
     return () => unsub()
   }, [chatId, updateMessage, updatePendingMessageToSent])
+
+  // Remove messages deleted locally (delete-for-me), revoked by us, or revoked
+  // remotely by another participant.
+  useEffect(() => {
+    const unsub = EventsOn("wa:message_deleted", (data: { chatId: string; messageId: string }) => {
+      if (data?.chatId === chatId) removeMessage(chatId, data.messageId)
+    })
+    return () => unsub()
+  }, [chatId, removeMessage])
 
   useGSAP(() => {
     if (!scrollButtonRef.current) return

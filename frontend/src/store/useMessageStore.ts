@@ -10,6 +10,7 @@ interface MessageStore {
   addMessage: (chatId: string, message: any) => void
   prependMessages: (chatId: string, messages: any[]) => void
   updateMessage: (chatId: string, message: any) => void
+  removeMessage: (chatId: string, messageId: string) => void
   addReactionToMessage: (chatId: string, messageId: string, emoji: string, senderId: string) => void
   clearMessages: (chatId: string) => void
   trimOldMessages: (chatId: string, keepCount: number) => void
@@ -67,6 +68,15 @@ export const useMessageStore = create<MessageStore>()(
         } else {
           state.messages[chatId].push(message)
         }
+      }),
+
+    removeMessage: (chatId, messageId) =>
+      set(state => {
+        const list = state.messages[chatId]
+        if (!list) return
+        state.messages[chatId] = list.filter(
+          m => m.Info?.ID !== messageId && m.tempId !== messageId,
+        )
       }),
 
     // Optimistically set/clear a sender's reaction on a message (empty emoji

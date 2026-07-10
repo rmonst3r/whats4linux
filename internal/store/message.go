@@ -1494,6 +1494,28 @@ func (ms *MessageStore) loadQuotedContents(messageIDs []string) (map[string]quot
 	return result, rows.Err()
 }
 
+// DeleteMessage removes a message and its associated media / reactions / link
+// previews from the local database. Used for delete-for-me and to reflect
+// revokes (delete-for-everyone, local or remote).
+func (ms *MessageStore) DeleteMessage(messageID string) error {
+	tx, err := ms.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, stmt := range []string{
+		`DELETE FROM messages WHERE message_id = ?`,
+		`DELETE FROM message_media WHERE message_id = ?`,
+		`DELETE FROM reactions WHERE message_id = ?`,
+		`DELETE FROM link_previews WHERE message_id = ?`,
+	} {
+		if _, err := tx.Exec(stmt, messageID); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
 // SearchDecodedMessages returns messages in a chat whose text matches the query
 // (case-insensitive substring), newest first.
 func (ms *MessageStore) SearchDecodedMessages(chatJID, queryText string, limit int) ([]DecodedMessage, error) {

@@ -87,6 +87,39 @@ func (a *Api) FetchMessagesPaged(jid string, limit int, beforeTimestamp int64, b
 	return messages, nil
 }
 
+// DeleteMessageForMe removes a message from the local database only (the other
+// participants keep their copy).
+func (a *Api) DeleteMessageForMe(chatJID, messageID string) error {
+	if err := a.messageStore.DeleteMessage(messageID); err != nil {
+		return err
+	}
+	runtime.EventsEmit(a.ctx, "wa:message_deleted", map[string]any{
+		"chatId":    chatJID,
+		"messageId": messageID,
+	})
+	return nil
+}
+
+// DeleteMessageForEveryone revokes one of our own messages for all participants
+// and removes it locally.
+func (a *Api) DeleteMessageForEveryone(chatJID, messageID string) error {
+	parsedJID, err := types.ParseJID(chatJID)
+	if err != nil {
+		return err
+	}
+	if _, err := a.waClient.RevokeMessage(a.ctx, parsedJID, messageID); err != nil {
+		return fmt.Errorf("revoke failed: %v", err)
+	}
+	if err := a.messageStore.DeleteMessage(messageID); err != nil {
+		log.Println("revoke: local delete failed:", err)
+	}
+	runtime.EventsEmit(a.ctx, "wa:message_deleted", map[string]any{
+		"chatId":    chatJID,
+		"messageId": messageID,
+	})
+	return nil
+}
+
 // SearchMessages returns messages in a chat whose text matches the query
 // (newest first). Blank queries return nothing.
 func (a *Api) SearchMessages(chatJID, queryText string, limit int) ([]store.DecodedMessage, error) {
