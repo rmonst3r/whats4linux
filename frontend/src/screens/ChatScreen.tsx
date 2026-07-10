@@ -1,4 +1,4 @@
-import { useEffect, useRef, useCallback, useState, memo } from "react"
+import { useEffect, useRef, useCallback, memo, useState, useMemo } from "react"
 import clsx from "clsx"
 import {
   GetChatList,
@@ -7,6 +7,7 @@ import {
   GetSelfAvatar,
   ToggleChatPin,
   ToggleChatArchive,
+  SearchChatJIDs,
 } from "../../wailsjs/go/api/Api"
 import { api } from "../../wailsjs/go/models"
 import { EventsOn } from "../../wailsjs/runtime/runtime"
@@ -86,7 +87,20 @@ const SearchBar = ({
         className="bg-transparent border-none outline-none text-sm w-full text-light-text dark:text-dark-text placeholder-gray-500"
         value={value}
         onChange={e => onChange(e.target.value)}
+        onKeyDown={e => e.key === "Escape" && onChange("")}
       />
+      {value && (
+        <button
+          onClick={() => onChange("")}
+          className="ml-2 shrink-0 text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200"
+          aria-label="Clear search"
+          title="Clear search"
+        >
+          <svg viewBox="0 0 24 24" width="18" height="18" className="fill-current">
+            <path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z" />
+          </svg>
+        </button>
+      )}
     </div>
   </div>
 )
@@ -414,6 +428,39 @@ export function ChatListScreen({ onOpenSettings }: ChatListScreenProps) {
   const filteredChatIds = useFilteredChatIds(showArchived)
   const archivedCount = useArchivedCount()
   const totalChats = useChatStore(state => state.chatIds.length)
+
+  // Global content search: chats whose *messages* match the query (name matches
+  // come from useFilteredChatIds). Debounced DB lookup, merged in recency order.
+  const [contentMatchIds, setContentMatchIds] = useState<string[]>([])
+  useEffect(() => {
+    const q = searchTerm.trim()
+    if (!q) {
+      setContentMatchIds([])
+      return
+    }
+    const t = setTimeout(async () => {
+      try {
+        const ids = await SearchChatJIDs(q, 50)
+        setContentMatchIds(ids || [])
+      } catch {
+        setContentMatchIds([])
+      }
+    }, 250)
+    return () => clearTimeout(t)
+  }, [searchTerm])
+
+  const displayedChatIds = useMemo(() => {
+    // NB: keep this independent of `view` — it's declared later in this
+    // component, and referencing it here would be a temporal-dead-zone crash.
+    // In status view this list isn't rendered anyway.
+    if (!searchTerm.trim()) return filteredChatIds
+    const byId = useChatStore.getState().chatsById
+    const order = useChatStore.getState().chatIds
+    const allowed = new Set<string>(filteredChatIds)
+    for (const id of contentMatchIds) if (byId.has(id)) allowed.add(id)
+    return order.filter(id => allowed.has(id))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchTerm, filteredChatIds, contentMatchIds])
 
   const isFetchingRef = useRef(false)
   const mountedRef = useRef(true)
@@ -868,14 +915,14 @@ export function ChatListScreen({ onOpenSettings }: ChatListScreenProps) {
                 selectedJid={selectedCommunity?.jid ?? null}
                 onSelect={handleCommunitySelect}
               />
-            ) : filteredChatIds.length === 0 ? (
+            ) : displayedChatIds.length === 0 ? (
               <EmptyState
                 hasChats={totalChats > 0}
                 isLoading={isFetchingRef.current}
                 onRefresh={fetchChats}
               />
             ) : (
-              filteredChatIds.map(chatId => (
+              displayedChatIds.map(chatId => (
                 <ChatListItem
                   key={chatId}
                   chatId={chatId}
@@ -911,6 +958,11 @@ export function ChatListScreen({ onOpenSettings }: ChatListScreenProps) {
               chatName={selectedChatName}
               chatAvatar={selectedChatAvatar}
               onBack={handleBack}
+              initialSearch={
+                searchTerm.trim() && contentMatchIds.includes(selectedChatId)
+                  ? searchTerm.trim()
+                  : undefined
+              }
             />
           ) : selectedCommunity ? (
             <CommunityHome

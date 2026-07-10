@@ -55,6 +55,72 @@ const (
 	LIMIT 1
 	`
 
+	// Full-text-ish search within a single chat (case-insensitive LIKE on the
+	// decoded text). Newest matches first.
+	SearchMessagesByChat = `
+	SELECT m.message_id, m.chat_jid, m.sender_jid, m.timestamp, m.is_from_me, m.text, m.reply_to_message_id, m.edited, m.forwarded,
+	       mm.type, mm.file_name, mm.width, mm.height, mm.gif_playback,
+	       lp.url, lp.title, lp.description,
+	       CASE WHEN length(COALESCE(lp.thumbnail, x'')) > 0 OR
+	                      (COALESCE(lp.direct_path, '') <> '' AND length(COALESCE(lp.media_key, x'')) > 0)
+	            THEN 1 ELSE 0 END
+	FROM messages AS m
+	LEFT JOIN message_media AS mm ON mm.message_id = m.message_id
+	LEFT JOIN link_previews AS lp ON lp.message_id = m.message_id
+	WHERE m.chat_jid = ? AND m.text LIKE ? ESCAPE '\'
+	ORDER BY m.timestamp DESC
+	LIMIT ?
+	`
+
+	// Distinct chats with at least one message matching the query, ordered by
+	// the most recent match. Excludes newsletters/broadcast. Used for global
+	// (content) search in the chat list.
+	SearchChatsByMessage = `
+	SELECT chat_jid, MAX(timestamp) AS ts
+	FROM messages
+	WHERE text LIKE ? ESCAPE '\'
+	  AND chat_jid NOT LIKE '%@newsletter'
+	  AND chat_jid NOT LIKE '%@broadcast'
+	GROUP BY chat_jid
+	ORDER BY ts DESC
+	LIMIT ?
+	`
+
+	SelectMessageTimestampByID = `
+	SELECT timestamp FROM messages WHERE message_id = ? LIMIT 1
+	`
+
+	// A window of messages centred on a target timestamp: `limit` at/older than
+	// the target plus `limit` newer, so a search result can be shown in context.
+	SelectMessagesAround = `
+	SELECT m.message_id, m.chat_jid, m.sender_jid, m.timestamp, m.is_from_me, m.text, m.reply_to_message_id, m.edited, m.forwarded,
+	       mm.type, mm.file_name, mm.width, mm.height, mm.gif_playback,
+	       lp.url, lp.title, lp.description,
+	       CASE WHEN length(COALESCE(lp.thumbnail, x'')) > 0 OR
+	                      (COALESCE(lp.direct_path, '') <> '' AND length(COALESCE(lp.media_key, x'')) > 0)
+	            THEN 1 ELSE 0 END
+	FROM (
+		SELECT * FROM (
+			SELECT message_id, chat_jid, sender_jid, timestamp, is_from_me, text, reply_to_message_id, edited, forwarded
+			FROM messages
+			WHERE chat_jid = ? AND timestamp <= ?
+			ORDER BY timestamp DESC
+			LIMIT ?
+		)
+		UNION
+		SELECT * FROM (
+			SELECT message_id, chat_jid, sender_jid, timestamp, is_from_me, text, reply_to_message_id, edited, forwarded
+			FROM messages
+			WHERE chat_jid = ? AND timestamp > ?
+			ORDER BY timestamp ASC
+			LIMIT ?
+		)
+	) AS m
+	LEFT JOIN message_media AS mm ON mm.message_id = m.message_id
+	LEFT JOIN link_previews AS lp ON lp.message_id = m.message_id
+	ORDER BY m.timestamp ASC
+	`
+
 	// Migration queries for messages.db
 	SelectAllMessagesJIDs = `
 	SELECT message_id, chat_jid, sender_jid

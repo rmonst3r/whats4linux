@@ -87,6 +87,39 @@ func (a *Api) FetchMessagesPaged(jid string, limit int, beforeTimestamp int64, b
 	return messages, nil
 }
 
+// SearchMessages returns messages in a chat whose text matches the query
+// (newest first). Blank queries return nothing.
+func (a *Api) SearchMessages(chatJID, queryText string, limit int) ([]store.DecodedMessage, error) {
+	if len(queryText) == 0 {
+		return []store.DecodedMessage{}, nil
+	}
+	if limit <= 0 {
+		limit = 200
+	}
+	return a.messageStore.SearchDecodedMessages(chatJID, queryText, limit)
+}
+
+// FetchMessagesAround returns a window of messages centred on messageID so the
+// frontend can display a search result in its surrounding context.
+func (a *Api) FetchMessagesAround(chatJID, messageID string, limit int) ([]store.DecodedMessage, error) {
+	if limit <= 0 {
+		limit = 25
+	}
+	return a.messageStore.GetDecodedMessagesAround(chatJID, messageID, limit)
+}
+
+// SearchChatJIDs returns chat JIDs (most-recent match first) containing a
+// message matching the query. Powers global content search in the chat list.
+func (a *Api) SearchChatJIDs(queryText string, limit int) ([]string, error) {
+	if len(queryText) == 0 {
+		return []string{}, nil
+	}
+	if limit <= 0 {
+		limit = 50
+	}
+	return a.messageStore.SearchChatJIDsByMessage(queryText, limit)
+}
+
 func buildQuotedMessage(msg *store.ExtendedMessage) *waE2E.Message {
 	if msg == nil {
 		return nil

@@ -3,6 +3,8 @@ import {
   SendMessage,
   FetchMessagesPaged,
   GetPinnedMessages,
+  FetchMessagesAround,
+  SearchMessages,
   SendChatPresence,
   GetGroupInfo,
   GetProfile,
@@ -26,6 +28,9 @@ interface ChatDetailProps {
   chatName: string
   chatAvatar?: string
   onBack?: () => void
+  // When the chat is opened from a global content-search result, this seeds the
+  // in-chat search so it jumps straight to the matching message.
+  initialSearch?: string
 }
 
 const PAGE_SIZE = 50
@@ -42,7 +47,7 @@ function blobToDataURL(blob: Blob): Promise<string> {
   })
 }
 
-export function ChatDetail({ chatId, chatName, chatAvatar, onBack }: ChatDetailProps) {
+export function ChatDetail({ chatId, chatName, chatAvatar, onBack, initialSearch }: ChatDetailProps) {
   const {
     messages,
     setMessages,
@@ -73,6 +78,24 @@ export function ChatDetail({ chatId, chatName, chatAvatar, onBack }: ChatDetailP
   const [isAtBottom, setIsAtBottom] = useState(true)
   const [highlightedMessageId, setHighlightedMessageId] = useState<string | null>(null)
   const [firstItemIndex, setFirstItemIndex] = useState(START_INDEX)
+
+  // In-chat search state.
+  const [searchOpen, setSearchOpen] = useState(false)
+  const [searchQuery, setSearchQuery] = useState("")
+  const [searchResults, setSearchResults] = useState<store.DecodedMessage[]>([])
+  const [searchIndex, setSearchIndex] = useState(0)
+  // True after jumping into history (loaded set may not include the latest
+  // messages), so the scroll-to-bottom button reloads the latest page.
+  const [viewingHistory, setViewingHistory] = useState(false)
+  const pendingJumpRef = useRef<string | null>(null)
+
+  // Reset the Virtuoso anchor synchronously when switching chats so the fresh
+  // list (see key={chatId} on <MessageList>) starts from a clean base.
+  const anchorChatIdRef = useRef(chatId)
+  if (anchorChatIdRef.current !== chatId) {
+    anchorChatIdRef.current = chatId
+    setFirstItemIndex(START_INDEX)
+  }
 
   const messageListRef = useRef<MessageListHandle>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
@@ -163,6 +186,57 @@ export function ChatDetail({ chatId, chatName, chatAvatar, onBack }: ChatDetailP
     })
   }, [])
 
+  // Jump to a message that may or may not be in the currently loaded window.
+  // If it isn't loaded, fetch a window centred on it (via FetchMessagesAround)
+  // and scroll once it renders (see the pendingJumpRef effect below).
+  const jumpToMessage = useCallback(
+    async (messageId: string, keepHighlight = false) => {
+      const loaded = useMessageStore.getState().messages[chatId] || []
+      const inWindow = loaded.some((m: any) => m.Info.ID === messageId)
+      if (inWindow) {
+        messageListRef.current?.scrollToMessage(messageId)
+        setHighlightedMessageId(messageId)
+      } else {
+        try {
+          const window = await FetchMessagesAround(chatId, messageId, 25)
+          if (window && window.length) {
+            pendingJumpRef.current = messageId
+            setViewingHistory(true)
+            setFirstItemIndex(START_INDEX)
+            setHasMore(true)
+            setMessages(chatId, window)
+            setHighlightedMessageId(messageId)
+          }
+        } catch (err) {
+          console.error("Jump-to-message failed:", err)
+        }
+      }
+      // For one-off jumps (quoted replies) fade the highlight; search keeps it
+      // on the active match until the next navigation / close.
+      if (!keepHighlight) {
+        setTimeout(() => setHighlightedMessageId(null), 1200)
+      }
+    },
+    [chatId, setMessages],
+  )
+
+  const handleQuotedClick = useCallback(
+    (messageId: string) => {
+      jumpToMessage(messageId, false)
+    },
+    [jumpToMessage],
+  )
+
+  // After a windowed jump, scroll to the target once it has rendered.
+  useEffect(() => {
+    const id = pendingJumpRef.current
+    if (!id) return
+    if (chatMessages.some((m: any) => m.Info.ID === id)) {
+      requestAnimationFrame(() => messageListRef.current?.scrollToMessage(id))
+      pendingJumpRef.current = null
+    }
+  }, [chatMessages])
+
   const handleAtBottomChange = useCallback((atBottom: boolean) => {
     setIsAtBottom(atBottom)
   }, [])
@@ -172,6 +246,47 @@ export function ChatDetail({ chatId, chatName, chatAvatar, onBack }: ChatDetailP
   useEffect(() => {
     textareaRef.current?.focus()
   }, [chatId])
+
+  // Navigate to a specific search result (keeps the match highlighted).
+  const goToResult = useCallback(
+    (idx: number) => {
+      if (idx < 0 || idx >= searchResults.length) return
+      setSearchIndex(idx)
+      jumpToMessage(searchResults[idx].Info.ID, true)
+    },
+    [searchResults, jumpToMessage],
+  )
+
+  const closeSearch = useCallback(() => {
+    setSearchOpen(false)
+    setSearchQuery("")
+    setSearchResults([])
+    setSearchIndex(0)
+    setHighlightedMessageId(null)
+  }, [])
+
+  // Debounced in-chat search: query the DB, then jump to the newest match.
+  useEffect(() => {
+    if (!searchOpen) return
+    const q = searchQuery.trim()
+    if (!q) {
+      setSearchResults([])
+      setSearchIndex(0)
+      return
+    }
+    const t = setTimeout(async () => {
+      try {
+        const res = await SearchMessages(chatId, q, 200)
+        const list = res || []
+        setSearchResults(list)
+        setSearchIndex(0)
+        if (list.length) jumpToMessage(list[0].Info.ID, true)
+      } catch (err) {
+        console.error("Search failed:", err)
+      }
+    }, 250)
+    return () => clearTimeout(t)
+  }, [searchQuery, searchOpen, chatId, jumpToMessage])
 
   // ESC: close overlays first (info panel, emoji picker, reply), then leave
   // the chat back to the list.
@@ -597,6 +712,20 @@ export function ChatDetail({ chatId, chatName, chatAvatar, onBack }: ChatDetailP
     }
   }, [chatId, loadInitialMessages, setActiveChatId])
 
+  // When the chat is opened from a global content-search result, open the
+  // in-chat search seeded with the term so it jumps to the matching message.
+  // Keyed on chatId so it only fires on (re)open, not on every keystroke.
+  const initialSearchRef = useRef(initialSearch)
+  initialSearchRef.current = initialSearch
+  useEffect(() => {
+    const seed = initialSearchRef.current
+    if (seed) {
+      setSearchOpen(true)
+      setSearchQuery(seed)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chatId])
+
   useEffect(() => {
     // New messages from events still use the old Message format for real-time updates
     // They will be compatible due to the Info and Content structure
@@ -662,6 +791,7 @@ export function ChatDetail({ chatId, chatName, chatAvatar, onBack }: ChatDetailP
           chatAvatar={chatAvatar}
           onBack={onBack}
           onInfoClick={() => setChatInfoOpen(!chatInfoOpen)}
+          onSearchClick={() => setSearchOpen(o => !o)}
         />
 
         {/* Pinned-messages banner: shows the latest pin, click cycles through
@@ -698,6 +828,65 @@ export function ChatDetail({ chatId, chatName, chatAvatar, onBack }: ChatDetailP
           </div>
         )}
 
+        {searchOpen && (
+          <div className="flex items-center gap-2 p-2 bg-light-secondary dark:bg-dark-secondary border-b border-gray-200 dark:border-dark-tertiary">
+            <div className="flex-1 flex items-center bg-light-tertiary dark:bg-dark-tertiary rounded-full px-3 py-1.5">
+              <input
+                autoFocus
+                type="text"
+                placeholder="Search in this chat"
+                className="bg-transparent border-none outline-none text-sm w-full text-light-text dark:text-dark-text placeholder-gray-500"
+                value={searchQuery}
+                onChange={e => setSearchQuery(e.target.value)}
+                onKeyDown={e => {
+                  if (e.key === "Escape") closeSearch()
+                  else if (e.key === "Enter") {
+                    e.preventDefault()
+                    // Enter -> older match, Shift+Enter -> newer match.
+                    goToResult(e.shiftKey ? searchIndex - 1 : searchIndex + 1)
+                  }
+                }}
+              />
+            </div>
+            <span className="text-xs text-gray-500 dark:text-gray-400 min-w-14 text-center tabular-nums">
+              {searchQuery.trim()
+                ? searchResults.length
+                  ? `${searchIndex + 1}/${searchResults.length}`
+                  : "0/0"
+                : ""}
+            </span>
+            <button
+              onClick={() => goToResult(searchIndex - 1)}
+              disabled={searchIndex <= 0}
+              className="p-1.5 rounded-full text-gray-500 dark:text-gray-400 hover:bg-hover-icons disabled:opacity-30"
+              title="Newer match"
+            >
+              <svg viewBox="0 0 24 24" width="18" height="18" className="fill-current">
+                <path d="M7.41 15.41L12 10.83l4.59 4.58L18 14l-6-6-6 6z" />
+              </svg>
+            </button>
+            <button
+              onClick={() => goToResult(searchIndex + 1)}
+              disabled={searchIndex >= searchResults.length - 1}
+              className="p-1.5 rounded-full text-gray-500 dark:text-gray-400 hover:bg-hover-icons disabled:opacity-30"
+              title="Older match"
+            >
+              <svg viewBox="0 0 24 24" width="18" height="18" className="fill-current">
+                <path d="M7.41 8.59L12 13.17l4.59-4.58L18 10l-6 6-6-6z" />
+              </svg>
+            </button>
+            <button
+              onClick={closeSearch}
+              className="p-1.5 rounded-full text-gray-500 dark:text-gray-400 hover:bg-hover-icons"
+              title="Close search (Esc)"
+            >
+              <svg viewBox="0 0 24 24" width="18" height="18" className="fill-current">
+                <path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z" />
+              </svg>
+            </button>
+          </div>
+        )}
+
         <div className="flex-1 relative overflow-hidden">
           {/* Static chat wallpaper: painted once behind the list instead of
               scrolling (and repainting) with it — big scroll-perf win. */}
@@ -710,7 +899,16 @@ export function ChatDetail({ chatId, chatName, chatAvatar, onBack }: ChatDetailP
 
           <button
             ref={scrollButtonRef}
-            onClick={() => scrollToBottom(false)}
+            onClick={() => {
+              // After a search jump we may be showing a history window; reload
+              // the latest page instead of just scrolling within it.
+              if (viewingHistory) {
+                setViewingHistory(false)
+                loadInitialMessages(++requestGenerationRef.current)
+              } else {
+                scrollToBottom(false)
+              }
+            }}
             className="absolute bottom-4 right-8 bg-white dark:bg-received-bubble-dark-bg p-2 rounded-full shadow-lg border border-gray-200 dark:border-gray-700 z-100 hover:bg-gray-100 dark:hover:bg-[#2a3942]"
           >
             <svg

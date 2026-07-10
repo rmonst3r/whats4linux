@@ -1,11 +1,13 @@
 import { GoBackIcon } from "../../assets/svgs/header_icons"
 import { InfoIcon } from "../../assets/svgs/chat_info_icons"
+import { SearchIcon } from "../../assets/svgs/settings_icons"
 interface ChatHeaderProps {
   chatName: string
   chatSubtitle?: string
   chatAvatar?: string
   onBack?: () => void
   onInfoClick?: () => void
+  onSearchClick?: () => void
 }
 
 export function ChatHeader({
@@ -14,6 +16,7 @@ export function ChatHeader({
   chatAvatar,
   onBack,
   onInfoClick,
+  onSearchClick,
 }: ChatHeaderProps) {
   return (
     <div className="flex items-center justify-between p-3 bg-light-secondary dark:bg-dark-bg border-b border-gray-300 dark:border-white/5">
@@ -44,13 +47,25 @@ export function ChatHeader({
         </div>
       </div>
 
-      <button
-        onClick={onInfoClick}
-        className="p-1 shrink-0 hover:bg-gray-200 dark:hover:bg-dark-tertiary rounded-full transition-colors"
-        aria-label="Chat info"
-      >
-        <InfoIcon />
-      </button>
+      <div className="flex items-center gap-1">
+        {onSearchClick && (
+          <button
+            onClick={onSearchClick}
+            className="p-2 rounded-full transition-colors text-gray-500 dark:text-gray-400 hover:bg-hover-icons"
+            aria-label="Search in chat"
+            title="Search in chat"
+          >
+            <SearchIcon />
+          </button>
+        )}
+        <button
+          onClick={onInfoClick}
+          className="p-1 shrink-0 hover:bg-gray-200 dark:hover:bg-dark-tertiary rounded-full transition-colors"
+          aria-label="Chat info"
+        >
+          <InfoIcon />
+        </button>
+      </div>
     </div>
   )
 }

@@ -1287,7 +1287,16 @@ func (ms *MessageStore) GetDecodedMessagesPaged(chatJID string, beforeTimestamp 
 	}
 	defer rows.Close()
 
-	page := make([]decodedPageRow, 0, limit)
+	return ms.scanDecodedMessages(rows, chatJID)
+}
+
+// scanDecodedMessages materialises decoded messages (with reactions + content)
+// from a query producing the standard message column order. Shared by the
+// paged / search / around-a-message queries.
+func (ms *MessageStore) scanDecodedMessages(rows *sql.Rows, chatJID string) ([]DecodedMessage, error) {
+	_ = chatJID
+
+	page := make([]decodedPageRow, 0)
 
 	for rows.Next() {
 		var (
@@ -1483,6 +1492,59 @@ func (ms *MessageStore) loadQuotedContents(messageIDs []string) (map[string]quot
 		}
 	}
 	return result, rows.Err()
+}
+
+// SearchDecodedMessages returns messages in a chat whose text matches the query
+// (case-insensitive substring), newest first.
+func (ms *MessageStore) SearchDecodedMessages(chatJID, queryText string, limit int) ([]DecodedMessage, error) {
+	rows, err := ms.db.Query(query.SearchMessagesByChat, chatJID, "%"+escapeLike(queryText)+"%", limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return ms.scanDecodedMessages(rows, chatJID)
+}
+
+// GetDecodedMessagesAround returns a window of messages centred on messageID so
+// a search result (which may be far back in history) can be shown in context.
+func (ms *MessageStore) GetDecodedMessagesAround(chatJID, messageID string, limit int) ([]DecodedMessage, error) {
+	var ts int64
+	if err := ms.db.QueryRow(query.SelectMessageTimestampByID, messageID).Scan(&ts); err != nil {
+		return nil, err
+	}
+	rows, err := ms.db.Query(query.SelectMessagesAround, chatJID, ts, limit, chatJID, ts, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return ms.scanDecodedMessages(rows, chatJID)
+}
+
+// SearchChatJIDsByMessage returns chat JIDs (most-recent match first) that
+// contain at least one message matching the query. Powers global content search.
+func (ms *MessageStore) SearchChatJIDsByMessage(queryText string, limit int) ([]string, error) {
+	rows, err := ms.db.Query(query.SearchChatsByMessage, "%"+escapeLike(queryText)+"%", limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var jids []string
+	for rows.Next() {
+		var jid string
+		var ts int64
+		if err := rows.Scan(&jid, &ts); err != nil {
+			continue
+		}
+		jids = append(jids, jid)
+	}
+	return jids, nil
+}
+
+// escapeLike escapes LIKE wildcards so user input is treated literally (paired
+// with ESCAPE '\' in the queries).
+func escapeLike(s string) string {
+	r := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
+	return r.Replace(s)
 }
 
 // buildDecodedContent creates a DecodedMessageContent from DecodedMessage fields
