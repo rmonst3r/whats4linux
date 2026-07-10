@@ -3,6 +3,7 @@ import { store } from "../../../wailsjs/go/models"
 import {
   DownloadImageToFile,
   GetCachedAvatar,
+  SaveMediaToFile,
   SendReaction,
   SetMessagePinned,
 } from "../../../wailsjs/go/api/Api"
@@ -124,6 +125,13 @@ export function MessageItem({
   const handleImageDownload = async () => {
     try {
       await DownloadImageToFile(message.Info.ID)
+    } catch (e) {}
+  }
+
+  // Save any media type (image/video/voice/document) to the Downloads folder.
+  const handleSave = async () => {
+    try {
+      await SaveMediaToFile(chatId, message.Info.ID)
     } catch (e) {}
   }
 
@@ -296,7 +304,7 @@ export function MessageItem({
               </div>
             </div>
             <button
-              onClick={handleImageDownload}
+              onClick={handleSave}
               className="p-2 border border-gray-300 dark:border-gray-600 rounded-full"
             >
               <svg
@@ -319,6 +327,14 @@ export function MessageItem({
   }
 
   const hasMedia = !!(content?.imageMessage || content?.videoMessage)
+  // Anything downloadable gets a "Save to device" entry in the message menu.
+  const hasDownloadableMedia = !!(
+    content?.imageMessage ||
+    content?.videoMessage ||
+    content?.audioMessage ||
+    content?.documentMessage ||
+    content?.stickerMessage
+  )
 
   return (
     <>
@@ -439,6 +455,9 @@ export function MessageItem({
             onReply={handleReply}
             onCopy={handleCopy}
             onReact={handleReact}
+            onForward={handleForward}
+            onDelete={handleDelete}
+            onSave={hasDownloadableMedia ? handleSave : undefined}
           />
 
           {!isFromMe && chatId.endsWith("@g.us") && firstInGroup && (

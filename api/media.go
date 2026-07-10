@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 
 	"github.com/gen2brain/beeep"
 	"github.com/lugvitc/whats4linux/internal/store"
@@ -338,6 +339,87 @@ func getFileExtension(mime string) string {
 	default:
 		return ".jpg"
 	}
+}
+
+// mediaExtension returns a sensible file extension for a WhatsApp media MIME.
+func mediaExtension(mime string) string {
+	switch {
+	case strings.HasPrefix(mime, "image/png"):
+		return ".png"
+	case strings.HasPrefix(mime, "image/gif"):
+		return ".gif"
+	case strings.HasPrefix(mime, "image/webp"):
+		return ".webp"
+	case strings.HasPrefix(mime, "image/"):
+		return ".jpg"
+	case strings.HasPrefix(mime, "video/3gpp"):
+		return ".3gp"
+	case strings.HasPrefix(mime, "video/"):
+		return ".mp4"
+	case strings.HasPrefix(mime, "audio/mpeg"):
+		return ".mp3"
+	case strings.HasPrefix(mime, "audio/mp4"), strings.HasPrefix(mime, "audio/aac"):
+		return ".m4a"
+	case strings.HasPrefix(mime, "audio/"):
+		return ".ogg"
+	case strings.Contains(mime, "pdf"):
+		return ".pdf"
+	default:
+		return ""
+	}
+}
+
+// SaveMediaToFile downloads any media message (image/video/voice/document) and
+// writes it to the user's Downloads folder (prompting for a location if a file
+// with that name already exists). Uses the original document filename if known.
+func (a *Api) SaveMediaToFile(chatJID, messageID string) error {
+	msg, err := a.messageStore.GetMessageWithMedia(chatJID, messageID)
+	if err != nil || msg == nil || msg.Media == nil {
+		return fmt.Errorf("message media not found")
+	}
+	data, err := a.waClient.Download(a.ctx, msg.Media)
+	if err != nil {
+		return fmt.Errorf("download failed: %v", err)
+	}
+
+	mime := msg.Media.GetMimetype()
+	if mime == "" {
+		switch msg.Media.GetMediaType() {
+		case whatsmeow.MediaImage:
+			mime = "image/jpeg"
+		case whatsmeow.MediaVideo:
+			mime = "video/mp4"
+		case whatsmeow.MediaAudio:
+			mime = "audio/ogg"
+		}
+	}
+
+	fileName := messageID + mediaExtension(mime)
+	if dec, derr := a.messageStore.GetDecodedMessage(chatJID, messageID); derr == nil &&
+		dec.Content != nil && dec.Content.DocumentMessage != nil && dec.Content.DocumentMessage.FileName != "" {
+		fileName = dec.Content.DocumentMessage.FileName
+	}
+
+	homeDir, _ := os.UserHomeDir()
+	downloadsDir := filepath.Join(homeDir, "Downloads")
+	_ = os.MkdirAll(downloadsDir, 0o755)
+	filePath := filepath.Join(downloadsDir, fileName)
+
+	if _, statErr := os.Stat(filePath); statErr == nil {
+		if filePath, err = runtime.SaveFileDialog(a.ctx, runtime.SaveDialogOptions{
+			DefaultDirectory: downloadsDir,
+			DefaultFilename:  fileName,
+			Title:            "File already exists. Save as...",
+		}); err != nil || filePath == "" {
+			return err
+		}
+	}
+
+	if err := os.WriteFile(filePath, data, 0o644); err != nil {
+		return err
+	}
+	beeep.Notify("whats4linux", "Saved: "+filePath, "")
+	return nil
 }
 
 // DownloadImageToFile downloads an image from cache to the Downloads folder
