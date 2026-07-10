@@ -242,3 +242,29 @@ a {
   -webkit-font-smoothing: subpixel-antialiased;
   image-rendering: auto;
 }
+
+/* Clickable links inside message text (opened in system browser via App.tsx). */
+.msg-link {
+  color: #53bdeb;
+  text-decoration: underline;
+  cursor: pointer;
+  word-break: break-all;
+}
+
+/* WebKitGTK's native <video> fullscreen button opens a broken black view, and
+   controlsList="nofullscreen" isn't honored — hide it via the WebKit pseudo-
+   element. The app's lightbox already provides a full-viewport view. */
+video::-webkit-media-controls-fullscreen-button {
+  display: none !important;
+}
+
+/* Status story progress bar fill. */
+@keyframes storyFill {
+  from { width: 0%; }
+  to { width: 100%; }
+}
+.story-active-bar {
+  animation-name: storyFill;
+  animation-timing-function: linear;
+  animation-fill-mode: forwards;
+}

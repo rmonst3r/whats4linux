@@ -1,12 +1,13 @@
 import { useEffect, useRef, useCallback, memo } from "react"
 import clsx from "clsx"
-import { GetChatList, GetCachedAvatar, GetSelfAvatar } from "../../wailsjs/go/api/Api"
+import { GetChatList, GetChannelList, GetCachedAvatar, GetSelfAvatar } from "../../wailsjs/go/api/Api"
 import { api } from "../../wailsjs/go/models"
 import { EventsOn } from "../../wailsjs/runtime/runtime"
 import { ChatDetail } from "./ChatDetail"
 import { useChatStore, useChatById, useFilteredChatIds } from "../store"
 import { useSelfAvatarStore } from "../store/useSelfAvatarStore"
 import type { ChatItem } from "../store/types"
+import { StatusList, StoryViewer, type StatusGroup } from "../components/chat/Status"
 import {
   GroupIcon,
   UserAvatar,
@@ -112,12 +113,19 @@ const ChatListItemContent = memo(({ chat, isSelected, onSelect }: ChatListItemCo
             : "yesterday"}
         </span>
       </div>
-      <div className="text-sm text-gray-500 dark:text-gray-400 truncate [&_p]:inline [&_p]:m-0 ">
-        {chat.sender && chat.type === "group" && <span className="mr-1">{chat.sender}: </span>}
-        <span
-          className="[&_br]:hidden no-formatting"
-          dangerouslySetInnerHTML={{ __html: chat.subtitle }}
-        />
+      <div className="flex items-center gap-2">
+        <div className="flex-1 text-sm text-gray-500 dark:text-gray-400 truncate [&_p]:inline [&_p]:m-0 ">
+          {chat.sender && chat.type === "group" && <span className="mr-1">{chat.sender}: </span>}
+          <span
+            className="[&_br]:hidden no-formatting"
+            dangerouslySetInnerHTML={{ __html: chat.subtitle }}
+          />
+        </div>
+        {chat.unreadCount ? (
+          <span className="shrink-0 min-w-5 h-5 px-1.5 flex items-center justify-center rounded-full bg-blue-500 text-white text-xs font-semibold">
+            {chat.unreadCount > 99 ? "99+" : chat.unreadCount}
+          </span>
+        ) : null}
       </div>
     </div>
   </div>
@@ -290,13 +298,19 @@ export function ChatListScreen({ onOpenSettings }: ChatListScreenProps) {
     }
   }, [setSelfAvatar])
 
+  const [view, setView] = useState<"chats" | "channels" | "status">("chats")
+  const [storyGroup, setStoryGroup] = useState<StatusGroup | null>(null)
+  const viewRef = useRef(view)
+  viewRef.current = view
+
   const fetchChats = useCallback(async () => {
     if (isFetchingRef.current) return
 
     isFetchingRef.current = true
 
     try {
-      const chatElements = await GetChatList()
+      const chatElements =
+        viewRef.current === "channels" ? await GetChannelList() : await GetChatList()
 
       if (!mountedRef.current) return
 
@@ -319,6 +333,20 @@ export function ChatListScreen({ onOpenSettings }: ChatListScreenProps) {
     }
   }, [setChats, transformChatElements])
 
+  // Reload the list (and drop the open chat) when switching Chats/Channels.
+  const viewInitRef = useRef(true)
+  useEffect(() => {
+    if (viewInitRef.current) {
+      viewInitRef.current = false
+      return
+    }
+    selectChat(null)
+    setChats([])
+    // Status has its own data path (grouped stories); don't load it as a chat list.
+    if (view !== "status") fetchChats()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [view])
+
   useEffect(() => {
     mountedRef.current = true
 
@@ -334,7 +362,14 @@ export function ChatListScreen({ onOpenSettings }: ChatListScreenProps) {
         timestamp: number
         sender: string
         reaction?: string
+        isFromMe?: boolean
       }) => {
+        // Mark an incoming message unread unless it belongs to the chat that's
+        // currently open. Read state via getState() to avoid a stale closure.
+        if (!data.isFromMe && useChatStore.getState().selectedChatId !== data.chatId) {
+          useChatStore.getState().incrementUnreadCount(data.chatId)
+        }
+
         if (!initialFetchDoneRef.current) {
           // If we haven't done initial fetch, do a full fetch
           setTimeout(fetchChats, 500)
@@ -409,10 +444,28 @@ export function ChatListScreen({ onOpenSettings }: ChatListScreenProps) {
           )}
         >
           <Header onOpenSettings={onOpenSettings} avatar={selfAvatar} />
+          <div className="flex gap-2 border-b border-gray-100 px-3 py-2 dark:border-dark-tertiary">
+            {(["chats", "channels", "status"] as const).map(v => (
+              <button
+                key={v}
+                onClick={() => setView(v)}
+                className={clsx(
+                  "rounded-full px-3 py-1 text-sm capitalize transition-colors",
+                  view === v
+                    ? "bg-green-600 text-white"
+                    : "text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-dark-tertiary",
+                )}
+              >
+                {v}
+              </button>
+            ))}
+          </div>
           <SearchBar value={searchTerm} onChange={setSearchTerm} />
 
           <div className="flex-1 overflow-y-auto">
-            {filteredChatIds.length === 0 ? (
+            {view === "status" ? (
+              <StatusList onOpen={setStoryGroup} />
+            ) : filteredChatIds.length === 0 ? (
               <EmptyState
                 hasChats={totalChats > 0}
                 isLoading={isFetchingRef.current}
@@ -430,6 +483,7 @@ export function ChatListScreen({ onOpenSettings }: ChatListScreenProps) {
             )}
           </div>
         </ResizablePanel>
+        {storyGroup && <StoryViewer group={storyGroup} onClose={() => setStoryGroup(null)} />}
 
         <ResizableHandle />
 

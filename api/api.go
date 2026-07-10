@@ -5,6 +5,11 @@ import (
 	"database/sql"
 	"errors"
 	"log"
+	"regexp"
+	"strings"
+	"sync/atomic"
+
+	"github.com/gen2brain/beeep"
 
 	"github.com/lugvitc/whats4linux/internal/cache"
 	"github.com/lugvitc/whats4linux/internal/misc"
@@ -24,12 +29,39 @@ import (
 
 // Api struct
 type Api struct {
-	ctx          context.Context
-	cw           *wa.AppDatabase
-	waClient     *whatsmeow.Client
-	messageStore *store.MessageStore
-	imageCache   *cache.ImageCache
-	us           *socket.UnixSocket
+	ctx           context.Context
+	cw            *wa.AppDatabase
+	waClient      *whatsmeow.Client
+	messageStore  *store.MessageStore
+	imageCache    *cache.ImageCache
+	us            *socket.UnixSocket
+	windowFocused atomic.Bool
+}
+
+// htmlTagRE strips HTML tags from message previews so desktop notifications
+// show plain text rather than markup.
+var htmlTagRE = regexp.MustCompile(`<[^>]*>`)
+
+// SetWindowFocused is called by the frontend on window focus/blur so the
+// backend only raises notifications while the window is in the background.
+func (a *Api) SetWindowFocused(focused bool) {
+	a.windowFocused.Store(focused)
+}
+
+// notifyIncoming raises a desktop notification for an incoming message when the
+// window isn't focused.
+func (a *Api) notifyIncoming(v *events.Message, parsedHTML string) {
+	title := v.Info.PushName
+	if title == "" {
+		title = "New message"
+	}
+	body := strings.TrimSpace(htmlTagRE.ReplaceAllString(parsedHTML, ""))
+	if body == "" {
+		body = "Sent you a message"
+	}
+	if err := beeep.Notify(title, body, ""); err != nil {
+		log.Println("notify failed:", err)
+	}
 }
 
 // NewApi creates a new Api application struct
@@ -49,6 +81,9 @@ func (a *Api) Shutdown(ctx context.Context) {
 // startup is called when the app starts. The context is saved
 // so we can call the runtime methods
 func (a *Api) Startup(ctx context.Context) {
+	// The window is focused when the app launches; the frontend keeps this in
+	// sync via SetWindowFocused so we don't notify while the user is looking.
+	a.windowFocused.Store(true)
 	var err error
 	a.us, err = socket.NewUnixSocket(ctx)
 	if err != nil {
@@ -144,10 +179,18 @@ func (a *Api) mainEventHandler(evt any) {
 					"messageText": parsedHTML, // Text field contains HTML now, but better than nothing or we can use updatedMsg.Text
 					"timestamp":   v.Info.Timestamp.Unix(),
 					"sender":      v.Info.PushName,
+					"isFromMe":    v.Info.IsFromMe,
 				})
 			} else if !errors.Is(err, sql.ErrNoRows) {
 				log.Println("Failed to get decoded message after processing:", err)
 			}
+		}
+
+		// Raise a desktop notification for genuine incoming messages (not our
+		// own, not reactions, not channel/broadcast posts) while backgrounded.
+		isFeed := v.Info.Chat.Server == types.NewsletterServer || v.Info.Chat.Server == types.BroadcastServer
+		if messageID != "" && !v.Info.IsFromMe && !isFeed && v.Message.GetReactionMessage() == nil && !a.windowFocused.Load() {
+			go a.notifyIncoming(v, parsedHTML)
 		}
 
 		if reaction := v.Message.GetReactionMessage(); reaction != nil {
@@ -282,6 +325,12 @@ func (a *Api) processHistorySync(v *events.HistorySync) {
 			}
 			parsedMsg, err := a.waClient.ParseWebMessage(chatJID, webMsg)
 			if err != nil || parsedMsg.Message == nil {
+				continue
+			}
+			// ParseWebMessage doesn't unwrap containers (ephemeral/view-once)
+			// like the live path does, so do it here or the content is lost.
+			parsedMsg.Message = store.UnwrapMessage(parsedMsg.Message)
+			if parsedMsg.Message == nil {
 				continue
 			}
 			parsedHTML := a.processMessageText(parsedMsg.Message)

@@ -108,6 +108,26 @@ const (
 	) AS m
 	LEFT JOIN message_media AS mm ON mm.message_id = m.message_id
 	WHERE rn = 1
+	  AND m.chat_jid NOT LIKE '%@newsletter'
+	  AND m.chat_jid NOT LIKE '%@broadcast'
+	ORDER BY m.timestamp DESC;
+	`
+
+	// Same as SelectDecodedChatList but only Channels (newsletter feeds).
+	SelectDecodedChannelList = `
+	SELECT m.message_id, m.chat_jid, m.sender_jid, m.timestamp, m.is_from_me, m.text, m.reply_to_message_id, m.edited, m.forwarded, mm.type, mm.file_name
+	FROM (
+		SELECT
+			message_id, chat_jid, sender_jid, timestamp, is_from_me, text, reply_to_message_id, edited, forwarded,
+			ROW_NUMBER() OVER (
+				PARTITION BY chat_jid
+				ORDER BY timestamp DESC
+			) AS rn
+		FROM messages
+	) AS m
+	LEFT JOIN message_media AS mm ON mm.message_id = m.message_id
+	WHERE rn = 1
+	  AND m.chat_jid LIKE '%@newsletter'
 	ORDER BY m.timestamp DESC;
 	`
 

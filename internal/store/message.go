@@ -142,9 +142,12 @@ func NewMessageStore() (*MessageStore, error) {
 		if err != nil {
 			return err
 		}
-		// Migrate pre-existing tables: add gif_playback if missing. Ignore the
-		// "duplicate column name" error that occurs once the column exists.
+		// Migrate pre-existing tables: add gif_playback / thumbnail if missing.
+		// Ignore the "duplicate column name" error once the column exists.
 		if _, aerr := tx.Exec(query.AddGifPlaybackColumn); aerr != nil && !strings.Contains(aerr.Error(), "duplicate column") {
+			return aerr
+		}
+		if _, aerr := tx.Exec(query.AddThumbnailColumn); aerr != nil && !strings.Contains(aerr.Error(), "duplicate column") {
 			return aerr
 		}
 		_, err = tx.Exec(query.CreatePinnedMessagesTable)
@@ -156,7 +159,22 @@ func NewMessageStore() (*MessageStore, error) {
 			return err
 		}
 		_, err = tx.Exec(query.CreateReadReceiptsTable)
-		return err
+		if err != nil {
+			return err
+		}
+		if _, err = tx.Exec(query.CreateLinkPreviewsTable); err != nil {
+			return err
+		}
+		// Add poster-download key columns to pre-existing link_previews tables.
+		for _, mig := range []string{
+			query.AddLinkPreviewDirectPath, query.AddLinkPreviewMediaKey,
+			query.AddLinkPreviewFileSHA, query.AddLinkPreviewFileEncSHA,
+		} {
+			if _, aerr := tx.Exec(mig); aerr != nil && !strings.Contains(aerr.Error(), "duplicate column") {
+				return aerr
+			}
+		}
+		return nil
 	})
 
 	if err != nil {
@@ -240,6 +258,32 @@ func openDB() (*sql.DB, error) {
 	}
 
 	return db, nil
+}
+
+// UnwrapMessage peels off container messages (ephemeral / view-once /
+// device-sent / document-with-caption) to reach the real content. whatsmeow
+// does this for live messages, but not for history-sync (ParseWebMessage),
+// which otherwise leaves disappearing-message content looking "unsupported".
+func UnwrapMessage(m *waE2E.Message) *waE2E.Message {
+	for m != nil {
+		switch {
+		case m.GetEphemeralMessage().GetMessage() != nil:
+			m = m.GetEphemeralMessage().GetMessage()
+		case m.GetViewOnceMessage().GetMessage() != nil:
+			m = m.GetViewOnceMessage().GetMessage()
+		case m.GetViewOnceMessageV2().GetMessage() != nil:
+			m = m.GetViewOnceMessageV2().GetMessage()
+		case m.GetViewOnceMessageV2Extension().GetMessage() != nil:
+			m = m.GetViewOnceMessageV2Extension().GetMessage()
+		case m.GetDeviceSentMessage().GetMessage() != nil:
+			m = m.GetDeviceSentMessage().GetMessage()
+		case m.GetDocumentWithCaptionMessage().GetMessage() != nil:
+			m = m.GetDocumentWithCaptionMessage().GetMessage()
+		default:
+			return m
+		}
+	}
+	return m
 }
 
 // ExtractMessageText extracts a text representation from a WhatsApp message
@@ -465,6 +509,7 @@ func (ms *MessageStore) ProcessMessageEvent(ctx context.Context, sd store.LIDSto
 
 // InsertMessage inserts a new message into messages.db
 func (ms *MessageStore) InsertMessage(info *types.MessageInfo, msg *waE2E.Message, parsedHTML string) error {
+	msg = UnwrapMessage(msg)
 	var (
 		text, fileName, replyToMessageID string
 		forwarded                        = false
@@ -512,6 +557,32 @@ func (ms *MessageStore) InsertMessage(info *types.MessageInfo, msg *waE2E.Messag
 	// nil-safe and returns false for non-video messages.
 	gifPlayback := msg.GetVideoMessage().GetGifPlayback()
 
+	// Embedded preview thumbnail (WhatsApp ships a small JPEG in the message) so
+	// videos show a preview + play button in the list without downloading them.
+	var thumbnail []byte
+	if v := msg.GetVideoMessage(); v != nil {
+		thumbnail = v.GetJPEGThumbnail()
+	} else if i := msg.GetImageMessage(); i != nil {
+		thumbnail = i.GetJPEGThumbnail()
+	}
+
+	// Link preview (title/description/thumbnail) from a text message with a URL.
+	// The poster image is usually a downloadable reference rather than embedded,
+	// so keep its keys to fetch it lazily later.
+	var lpURL, lpTitle, lpDesc, lpDirectPath string
+	var lpThumb, lpMediaKey, lpFileSHA, lpFileEncSHA []byte
+	if etm := msg.GetExtendedTextMessage(); etm != nil && (etm.GetTitle() != "" || len(etm.GetJPEGThumbnail()) > 0 || etm.GetThumbnailDirectPath() != "") {
+		lpURL = etm.GetMatchedText()
+		lpTitle = etm.GetTitle()
+		lpDesc = etm.GetDescription()
+		lpThumb = etm.GetJPEGThumbnail()
+		lpDirectPath = etm.GetThumbnailDirectPath()
+		lpMediaKey = etm.GetMediaKey()
+		lpFileSHA = etm.GetThumbnailSHA256()
+		lpFileEncSHA = etm.GetThumbnailEncSHA256()
+	}
+	hasPreview := lpTitle != "" || len(lpThumb) > 0 || lpDirectPath != ""
+
 	if parsedHTML != "" {
 		text = parsedHTML
 	}
@@ -533,6 +604,12 @@ func (ms *MessageStore) InsertMessage(info *types.MessageInfo, msg *waE2E.Messag
 		if err != nil {
 			return err
 		}
+		if hasPreview {
+			if _, perr := tx.Exec(query.InsertLinkPreview, info.ID, lpURL, lpTitle, lpDesc, lpThumb,
+				lpDirectPath, lpMediaKey, lpFileSHA, lpFileEncSHA); perr != nil {
+				return perr
+			}
+		}
 		// no media to process
 		if emc == nil {
 			return nil
@@ -549,6 +626,7 @@ func (ms *MessageStore) InsertMessage(info *types.MessageInfo, msg *waE2E.Messag
 			width, height,
 			fileName,
 			gifPlayback,
+			thumbnail,
 		)
 		return err
 	})
@@ -782,8 +860,18 @@ func (ms *MessageStore) GetMessageWithMediaByID(messageID string) (*ExtendedMess
 }
 
 // GetChatList returns the chat list from messages.db
+// GetChatList returns the regular chat list (channels/broadcast excluded).
 func (ms *MessageStore) GetChatList() []ChatMessage {
-	rows, err := ms.db.Query(query.SelectDecodedChatList)
+	return ms.chatListFromQuery(query.SelectDecodedChatList)
+}
+
+// GetChannelList returns only Channel (newsletter) feeds.
+func (ms *MessageStore) GetChannelList() []ChatMessage {
+	return ms.chatListFromQuery(query.SelectDecodedChannelList)
+}
+
+func (ms *MessageStore) chatListFromQuery(q string) []ChatMessage {
+	rows, err := ms.db.Query(q)
 	if err != nil {
 		log.Println("Failed to query chat list:", err)
 		return []ChatMessage{}
@@ -1202,6 +1290,62 @@ func (ms *MessageStore) isGifPlayback(messageID string) bool {
 		return false
 	}
 	return gif.Bool
+}
+
+// GetThumbnail returns the stored preview JPEG bytes for a message, or nil if
+// none was stored (e.g. messages synced before the thumbnail column existed).
+func (ms *MessageStore) GetThumbnail(messageID string) []byte {
+	var thumb []byte
+	if err := ms.db.QueryRow(query.SelectThumbnailByMessageID, messageID).Scan(&thumb); err != nil {
+		return nil
+	}
+	return thumb
+}
+
+// LinkPreview is the stored preview for a URL in a text message.
+type LinkPreview struct {
+	URL         string
+	Title       string
+	Description string
+	Thumbnail   []byte
+}
+
+// GetLinkPreview returns the stored link preview for a message, or nil if none.
+func (ms *MessageStore) GetLinkPreview(messageID string) *LinkPreview {
+	var lp LinkPreview
+	err := ms.db.QueryRow(query.SelectLinkPreviewByMessageID, messageID).
+		Scan(&lp.URL, &lp.Title, &lp.Description, &lp.Thumbnail)
+	if err != nil {
+		return nil
+	}
+	return &lp
+}
+
+// LinkPreviewMedia holds a cached poster (if any) and the keys to download it.
+type LinkPreviewMedia struct {
+	Thumbnail     []byte
+	DirectPath    string
+	MediaKey      []byte
+	FileSHA256    []byte
+	FileEncSHA256 []byte
+}
+
+// GetLinkPreviewMedia returns the cached poster and its download keys.
+func (ms *MessageStore) GetLinkPreviewMedia(messageID string) *LinkPreviewMedia {
+	var m LinkPreviewMedia
+	var dp sql.NullString
+	err := ms.db.QueryRow(query.SelectLinkPreviewMediaByMessageID, messageID).
+		Scan(&m.Thumbnail, &dp, &m.MediaKey, &m.FileSHA256, &m.FileEncSHA256)
+	if err != nil {
+		return nil
+	}
+	m.DirectPath = dp.String
+	return &m
+}
+
+// CacheLinkPreviewThumbnail stores a downloaded poster so it's only fetched once.
+func (ms *MessageStore) CacheLinkPreviewThumbnail(messageID string, data []byte) {
+	_, _ = ms.db.Exec(query.UpdateLinkPreviewThumbnail, data, messageID)
 }
 
 // GetDecodedMessage returns a single decoded message from messages.db

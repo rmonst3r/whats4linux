@@ -1,13 +1,20 @@
-import React, { useState, useEffect } from "react"
+import React, { useState, useEffect, lazy, Suspense } from "react"
+import emojiData from "@emoji-mart/data"
 import { store } from "../../../wailsjs/go/models"
-import { DownloadImageToFile, GetContact } from "../../../wailsjs/go/api/Api"
+import { DownloadImageToFile, SendReaction } from "../../../wailsjs/go/api/Api"
 import { MediaContent } from "./MediaContent"
 import { QuotedMessage } from "./QuotedMessage"
 import { ReactionBubble } from "./Reactions"
+import { LinkPreview } from "./LinkPreview"
 import clsx from "clsx"
 import { MessageMenu } from "./MessageMenu"
 import { ClockPendingIcon, BlueTickIcon, ForwardedIcon } from "../../assets/svgs/chat_icons"
 import { useContactStore } from "../../store/useContactStore"
+import { useMessageStore } from "../../store"
+import { isMe } from "../../lib/self"
+
+const QUICK_REACTIONS = ["👍", "❤️", "😂", "😮", "😢", "🙏"]
+const EmojiPicker = lazy(() => import("@emoji-mart/react"))
 
 interface MessageItemProps {
   message: store.DecodedMessage
@@ -34,7 +41,6 @@ export function MessageItem({
   onQuotedClick,
   highlightedMessageId,
 }: MessageItemProps) {
-  // console.log(message)
   const isFromMe = message.Info.IsFromMe
   // Debug: log every render and also when the message updates or unmounts
   // console.log(`[MessageItem] render id=${message.Info.ID} fromMe=${isFromMe} chat=${chatId}`)
@@ -47,10 +53,24 @@ export function MessageItem({
   const content = message.Content
   const isSticker = !!content?.stickerMessage
   const isPending = (message as any).isPending || false
-  const [senderName, setSenderName] = useState("~ " + message.Info.PushName || "Unknown")
-  const [senderColor, setSenderColor] = useState<string | undefined>(undefined)
-  const getContactColor = useContactStore(state => state.getContactColor)
-  const [Reactions, setReactions] = useState(message.reactions ?? [])
+  const isGroup = chatId.endsWith("@g.us")
+  // Seed sender name/color from the cache synchronously so a cached group
+  // message renders correctly on first paint and never re-renders for it.
+  const cachedSender =
+    !isFromMe && isGroup && message.Info.Sender
+      ? useContactStore.getState().contacts[message.Info.Sender]
+      : undefined
+  const [senderName, setSenderName] = useState(
+    cachedSender?.name || "~ " + message.Info.PushName || "Unknown",
+  )
+  const [senderColor, setSenderColor] = useState<string | undefined>(cachedSender?.senderColor)
+  const getSenderInfo = useContactStore(state => state.getSenderInfo)
+  const addReactionToMessage = useMessageStore(state => state.addReactionToMessage)
+  const [showReactionPicker, setShowReactionPicker] = useState(false)
+  const [showFullEmoji, setShowFullEmoji] = useState(false)
+  // Derived directly from the message; no state/effect needed (a state+effect
+  // here forced an extra re-render per message on mount).
+  const reactions = message.reactions ?? []
 
   // Helper function to render caption with markdown
   const renderCaption = (caption: string | undefined) => {
@@ -83,8 +103,22 @@ export function MessageItem({
     }
   }
 
-  const handleReact = () => {
-    // TODO: Implement react functionality
+  const handleReact = () => setShowReactionPicker(v => !v)
+
+  const myReaction = (reactions as any[]).find(r => isMe(r.sender_id))?.emoji as
+    | string
+    | undefined
+
+  const sendReaction = (emoji: string) => {
+    // Tapping the emoji you already reacted with removes it (WhatsApp behaviour).
+    const finalEmoji = myReaction === emoji ? "" : emoji
+    // For our own messages the reaction key's sender is us (empty -> backend
+    // fills in own JID); for received messages it's the original sender.
+    const senderJID = isFromMe ? "" : message.Info.Sender
+    SendReaction(chatId, senderJID, message.Info.ID, finalEmoji).catch(() => {})
+    addReactionToMessage(chatId, message.Info.ID, finalEmoji, "me")
+    setShowReactionPicker(false)
+    setShowFullEmoji(false)
   }
 
   const handleForward = () => {
@@ -103,28 +137,24 @@ export function MessageItem({
     // TODO: Implement delete functionality
   }
 
-  // Fetch Group Member Names (Feature #2)
+  // Fetch group member name + color from the cached store (one RPC per sender,
+  // then synchronous) so scrolling a group chat doesn't fire an RPC per row.
   useEffect(() => {
-    if (!isFromMe && message.Info.Sender && chatId.endsWith("@g.us")) {
-      // GetContact now accepts a string JID directly
-      GetContact(message.Info.Sender)
-        .then((contact: any) => {
-          if (contact?.full_name || contact?.push_name) {
-            setSenderName(contact.full_name || "~ " + contact.push_name)
-          }
-        })
-        .catch(() => {})
-      getContactColor(message.Info.Sender)
-        .then((color: string) => {
-          setSenderColor(color)
-        })
-        .catch(() => {})
+    if (isFromMe || !isGroup || !message.Info.Sender) return
+    // Already seeded from cache above — no fetch, no re-render.
+    if (useContactStore.getState().contacts[message.Info.Sender]) return
+    let cancelled = false
+    getSenderInfo(message.Info.Sender)
+      .then(({ name, color }) => {
+        if (cancelled) return
+        if (name) setSenderName(name)
+        if (color) setSenderColor(color)
+      })
+      .catch(() => {})
+    return () => {
+      cancelled = true
     }
-  }, [message.Info.Sender, chatId, isFromMe, getContactColor])
-
-  useEffect(() => {
-    setReactions(message.reactions ?? [])
-  }, [message.Info.ID, message.reactions])
+  }, [message.Info.Sender, isGroup, isFromMe, getSenderInfo])
 
   const contextInfo =
     content?.extendedTextMessage?.contextInfo ||
@@ -137,8 +167,15 @@ export function MessageItem({
   const renderContent = () => {
     if (!content) return <span className="italic opacity-50">Empty Message</span>
     else if (content.conversation || content.extendedTextMessage?.text) {
-      const htmlContent = content.conversation || content.extendedTextMessage?.text
-      return <div className="pr-5" dangerouslySetInnerHTML={{ __html: htmlContent }} />
+      const htmlContent = content.conversation || content.extendedTextMessage?.text || ""
+      return (
+        <>
+          <div className="pr-5" dangerouslySetInnerHTML={{ __html: htmlContent }} />
+          {htmlContent.includes('class="msg-link"') && (
+            <LinkPreview messageId={message.Info.ID} />
+          )}
+        </>
+      )
     } else if (content.imageMessage)
       return (
         <div className="flex flex-col">
@@ -218,7 +255,6 @@ export function MessageItem({
     }
     // Note: senderKeyDistributionMessage and reactionMessage are not stored in messages.db
     // Reactions are stored separately and shown via the Reactions field
-    console.log("Unsupported message content:", content)
     return <span className="italic opacity-50 text-xs">Unsupported Message Type</span>
   }
 
@@ -237,7 +273,7 @@ export function MessageItem({
       >
         <div
           className={clsx(
-            "max-w-xs sm:max-w-sm md:max-w-md lg:max-w-lg xl:max-w-xl rounded-lg p-2 mx-5 shadow-sm relative min-w-0",
+            "max-w-xs sm:max-w-sm md:max-w-md lg:max-w-lg xl:max-w-xl rounded-lg p-2 mx-5 relative min-w-0",
             {
               "w-min": hasMedia,
               "bg-transparent shadow-none": isSticker,
@@ -252,6 +288,64 @@ export function MessageItem({
             },
           )}
         >
+          {/* Hover reaction trigger just outside the bubble (WhatsApp-style). */}
+          <button
+            onClick={() => setShowReactionPicker(v => !v)}
+            title="React"
+            className={clsx(
+              "absolute bottom-1 z-20 rounded-full bg-white p-1 text-sm leading-none opacity-0 shadow transition-opacity group-hover:opacity-100 dark:bg-dark-tertiary",
+              isFromMe ? "-left-9" : "-right-9",
+            )}
+          >
+            🙂
+          </button>
+
+          {showReactionPicker && (
+            <div
+              className={clsx(
+                "absolute bottom-9 z-9999 flex w-max items-center gap-1 rounded-full bg-white px-2 py-1 shadow-lg dark:bg-dark-tertiary",
+                isFromMe ? "right-0" : "left-0",
+              )}
+            >
+              {QUICK_REACTIONS.map(emoji => (
+                <button
+                  key={emoji}
+                  onClick={() => sendReaction(emoji)}
+                  className={clsx(
+                    "rounded-full px-1 text-lg leading-none transition-transform hover:scale-125",
+                    myReaction === emoji && "bg-blue-500/40",
+                  )}
+                >
+                  {emoji}
+                </button>
+              ))}
+              <button
+                onClick={() => {
+                  setShowFullEmoji(true)
+                  setShowReactionPicker(false)
+                }}
+                title="More"
+                className="ml-1 flex h-6 w-6 items-center justify-center rounded-full bg-black/10 text-sm dark:bg-white/10"
+              >
+                +
+              </button>
+            </div>
+          )}
+
+          {showFullEmoji && (
+            <div className="absolute bottom-9 z-9999" style={isFromMe ? { right: 0 } : { left: 0 }}>
+              <Suspense fallback={<div className="rounded bg-white p-2 text-xs shadow dark:bg-dark-tertiary">Loading…</div>}>
+                <EmojiPicker
+                  data={emojiData}
+                  onEmojiSelect={(e: any) => sendReaction(e.native)}
+                  onClickOutside={() => setShowFullEmoji(false)}
+                  theme="auto"
+                  previewPosition="none"
+                  skinTonePosition="none"
+                />
+              </Suspense>
+            </div>
+          )}
           {/* Message Menu - positioned at top right corner */}
           <MessageMenu
             messageId={message.Info.ID}
@@ -294,9 +388,15 @@ export function MessageItem({
           </div>
 
           {/* Reactions */}
-          {Reactions && Reactions.length > 0 && (
-            <div className={clsx("absolute -bottom-3 z-9999", isFromMe ? "right-2" : "left-2")}>
-              <ReactionBubble reactions={Reactions} isFromMe={isFromMe} />
+          {reactions.length > 0 && (
+            <div
+              onClick={() => setShowReactionPicker(v => !v)}
+              className={clsx(
+                "absolute -bottom-3 z-9999 cursor-pointer",
+                isFromMe ? "right-2" : "left-2",
+              )}
+            >
+              <ReactionBubble reactions={reactions} isFromMe={isFromMe} />
             </div>
           )}
         </div>

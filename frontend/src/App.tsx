@@ -1,10 +1,12 @@
 import { useEffect, useRef, useState } from "react"
-import { Login, GetCustomCSS, GetCustomJS } from "../wailsjs/go/api/Api"
-import { EventsOn } from "../wailsjs/runtime/runtime"
+import { Login, GetCustomCSS, GetCustomJS, SetWindowFocused } from "../wailsjs/go/api/Api"
+import { EventsOn, BrowserOpenURL } from "../wailsjs/runtime/runtime"
 import QRCode from "qrcode"
 import { ChatListScreen } from "./screens/ChatScreen"
 import { LoginScreen } from "./screens/LoginScreen"
 import { SettingsScreen } from "./screens/SettingsScreen"
+import { initSelf } from "./lib/self"
+import { Lightbox } from "./components/Lightbox"
 
 import { useUIStore } from "./store"
 import { useAppSettingsStore } from "./store/useAppSettingsStore"
@@ -33,8 +35,39 @@ function App() {
     }
   }, [theme, loaded])
 
+  // Open links inside message text in the system browser instead of navigating
+  // the app's webview. Links are rendered as <a class="msg-link"> by the backend.
+  useEffect(() => {
+    const onClick = (e: MouseEvent) => {
+      const target = e.target as HTMLElement | null
+      const anchor = target?.closest?.("a.msg-link") as HTMLAnchorElement | null
+      if (anchor) {
+        e.preventDefault()
+        const href = anchor.getAttribute("href")
+        if (href) BrowserOpenURL(href)
+      }
+    }
+    document.addEventListener("click", onClick)
+    return () => document.removeEventListener("click", onClick)
+  }, [])
+
+  // Keep the backend informed of window focus so it only notifies when the
+  // window is in the background.
+  useEffect(() => {
+    const onFocus = () => SetWindowFocused(true)
+    const onBlur = () => SetWindowFocused(false)
+    window.addEventListener("focus", onFocus)
+    window.addEventListener("blur", onBlur)
+    SetWindowFocused(document.hasFocus())
+    return () => {
+      window.removeEventListener("focus", onFocus)
+      window.removeEventListener("blur", onBlur)
+    }
+  }, [])
+
   useEffect(() => {
     Login()
+    initSelf()
 
     GetCustomCSS().then(css => {
       if (css) {
@@ -87,6 +120,7 @@ function App() {
 
   return (
     <div className="min-h-screen bg-light-secondary text-light-text dark:bg-black dark:text-white relative">
+      <Lightbox />
       <div className="fixed bottom-4 right-4 z-50 flex flex-col gap-2">
         {notifications.map(n => (
           <div key={n.id} className="bg-zinc-800 text-white px-4 py-2 rounded shadow-lg">

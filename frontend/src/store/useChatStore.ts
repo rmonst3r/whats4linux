@@ -38,17 +38,24 @@ export const useChatStore = create<ChatStore>((set, get) => ({
   selectedChatSender: undefined,
   searchTerm: "",
 
-  setChats: chats => {
-    const newChatsById = new Map<string, ChatItem>()
-    const newChatIds: string[] = []
+  setChats: chats =>
+    set(state => {
+      const newChatsById = new Map<string, ChatItem>()
+      const newChatIds: string[] = []
 
-    for (const chat of chats) {
-      newChatsById.set(chat.id, chat)
-      newChatIds.push(chat.id)
-    }
+      for (const chat of chats) {
+        // Preserve unread counts across a full refetch; the rebuilt items from
+        // the backend don't carry unread state.
+        const prev = state.chatsById.get(chat.id)
+        newChatsById.set(
+          chat.id,
+          prev?.unreadCount ? { ...chat, unreadCount: prev.unreadCount } : chat,
+        )
+        newChatIds.push(chat.id)
+      }
 
-    set({ chatsById: newChatsById, chatIds: newChatIds })
-  },
+      return { chatsById: newChatsById, chatIds: newChatIds }
+    }),
 
   selectChat: chat =>
     set({
