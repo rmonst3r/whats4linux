@@ -319,6 +319,9 @@ func ExtractMessageText(msg *waE2E.Message) string {
 		case msg.GetStickerMessage() != nil:
 			return "sticker"
 		default:
+			if preview, ok := SpecialPreview(msg); ok {
+				return preview
+			}
 			return "message"
 		}
 	}
@@ -486,6 +489,25 @@ func (ms *MessageStore) ProcessMessageEvent(ctx context.Context, sd store.LIDSto
 		return targetID
 	}
 
+	// Handle revokes: replace the target's content with a deleted marker.
+	if protoMsg := msg.Message.GetProtocolMessage(); protoMsg != nil && protoMsg.GetType() == waE2E.ProtocolMessage_REVOKE {
+		targetID := protoMsg.GetKey().GetID()
+		if targetID == "" {
+			return ""
+		}
+		if err := ms.MarkMessageDeleted(targetID); err != nil {
+			log.Println("Failed to mark message deleted:", err)
+			return ""
+		}
+		return targetID
+	}
+
+	// Protocol noise (poll votes, keep-in-chat, remaining protocol messages)
+	// must not create visible rows or bump the chat list.
+	if ShouldSkipMessage(msg.Message) && msg.Message.GetPinInChatMessage() == nil {
+		return ""
+	}
+
 	chat := msg.Info.Chat.User
 
 	// Update chatListMap with the new latest message
@@ -576,6 +598,8 @@ func (ms *MessageStore) InsertMessage(info *types.MessageInfo, msg *waE2E.Messag
 	var thumbnail []byte
 	if v := msg.GetVideoMessage(); v != nil {
 		thumbnail = v.GetJPEGThumbnail()
+	} else if p := msg.GetPtvMessage(); p != nil {
+		thumbnail = p.GetJPEGThumbnail()
 	} else if i := msg.GetImageMessage(); i != nil {
 		thumbnail = i.GetJPEGThumbnail()
 	}
@@ -599,6 +623,14 @@ func (ms *MessageStore) InsertMessage(info *types.MessageInfo, msg *waE2E.Messag
 
 	if parsedHTML != "" {
 		text = parsedHTML
+	}
+
+	// Message types with no plain-text body (polls, locations, contacts,
+	// invites, events…) render as prebuilt HTML cards.
+	if text == "" && emc == nil {
+		if special, ok := DescribeSpecialMessage(msg); ok {
+			text = special
+		}
 	}
 
 	return ms.runSync(func(tx *sql.Tx) error {
@@ -1128,6 +1160,16 @@ func extractMessageContent(msg *waE2E.Message) (text, fileName, replyToMessageID
 			replyToMessageID = contextInfo.GetStanzaID()
 			forwarded = contextInfo.GetIsForwarded()
 		}
+	case msg.GetPtvMessage() != nil:
+		// Round video notes are plain VideoMessages in a different envelope.
+		emc = msg.GetPtvMessage()
+		width = int(msg.GetPtvMessage().GetWidth())
+		height = int(msg.GetPtvMessage().GetHeight())
+		mediaType = mtypes.MediaTypeVideo
+		if contextInfo := msg.GetPtvMessage().GetContextInfo(); contextInfo != nil {
+			replyToMessageID = contextInfo.GetStanzaID()
+			forwarded = contextInfo.GetIsForwarded()
+		}
 	case msg.GetStickerMessage() != nil:
 		emc = msg.GetStickerMessage()
 		mediaType = mtypes.MediaTypeSticker
@@ -1617,4 +1659,14 @@ func (ms *MessageStore) GetArchivedChats() map[string]int64 {
 		}
 	}
 	return archived
+}
+
+
+// MarkMessageDeleted replaces a revoked message's content with a deleted
+// marker, mirroring WhatsApp's "This message was deleted".
+func (ms *MessageStore) MarkMessageDeleted(messageID string) error {
+	_, err := ms.db.Exec(
+		`UPDATE messages SET text = ?, has_media = 0 WHERE message_id = ?`,
+		`<i>🚫 This message was deleted</i>`, messageID)
+	return err
 }

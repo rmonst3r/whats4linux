@@ -12,6 +12,36 @@ label[for] {
   cursor: pointer;
 }
 
+/* Special message cards (polls, locations, contacts, invites, events). */
+.msg-card {
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.06);
+  padding: 6px 8px;
+  margin: 2px 0;
+  min-width: 180px;
+}
+.dark .msg-card {
+  background: rgba(0, 0, 0, 0.25);
+}
+.msg-card + .msg-card {
+  margin-top: 4px;
+}
+.poll-opt {
+  margin-top: 6px;
+  padding: 4px 6px;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.05);
+}
+.dark .poll-opt {
+  background: rgba(255, 255, 255, 0.06);
+}
+.msg-card-note {
+  display: block;
+  margin-top: 5px;
+  font-size: 11px;
+  opacity: 0.6;
+}
+
 /* Chat wallpaper: WhatsApp Web's doodle tile, bundled by Vite. */
 .chat-wallpaper {
   background-color: #efeae2;
