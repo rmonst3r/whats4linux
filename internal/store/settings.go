@@ -2,6 +2,7 @@ package store
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"sync"
@@ -35,10 +36,14 @@ func GetSettings() map[string]any {
 }
 
 func SaveSettings(data map[string]any) error {
-	settingsInstance.data = data
-
 	settingsInstance.mu.Lock()
 	defer settingsInstance.mu.Unlock()
+
+	if settingsInstance.f == nil {
+		return errors.New("settings store is not initialised")
+	}
+
+	settingsInstance.data = data
 
 	// Truncate the file before writing
 	err := settingsInstance.f.Truncate(0)
@@ -62,5 +67,14 @@ func SaveSettings(data map[string]any) error {
 }
 
 func CloseSettings() error {
-	return settingsInstance.f.Close()
+	settingsInstance.mu.Lock()
+	defer settingsInstance.mu.Unlock()
+
+	if settingsInstance.f == nil {
+		return nil
+	}
+
+	err := settingsInstance.f.Close()
+	settingsInstance.f = nil
+	return err
 }
