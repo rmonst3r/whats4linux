@@ -145,19 +145,30 @@ export const useChatIds = () => {
   return useChatStore(useShallow((state: ChatStore) => state.chatIds))
 }
 
-// Selector for filtered chat IDs based on search
-export const useFilteredChatIds = () => {
+// Selector for filtered chat IDs based on search and archive view.
+export const useFilteredChatIds = (showArchived = false) => {
   return useChatStore(
     useShallow((state: ChatStore) => {
       const { chatIds, chatsById, searchTerm } = state
-      if (!searchTerm) return chatIds
+      const term = searchTerm.toLowerCase()
 
       return chatIds.filter(id => {
         const chat = chatsById.get(id)
-        return chat?.name.toLowerCase().includes(searchTerm.toLowerCase())
+        if (!chat) return false
+        if (!!chat.archived !== showArchived) return false
+        return !term || chat.name.toLowerCase().includes(term)
       })
     }),
   )
+}
+
+// Number of archived chats, for the "Archived" entry row.
+export const useArchivedCount = () => {
+  return useChatStore((state: ChatStore) => {
+    let n = 0
+    for (const chat of state.chatsById.values()) if (chat.archived) n++
+    return n
+  })
 }
 
 // Legacy helper to get chats as array (for backward compatibility)

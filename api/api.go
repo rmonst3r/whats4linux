@@ -346,6 +346,12 @@ func (a *Api) mainEventHandler(evt any) {
 		// whatsmeow delivers past conversations here after linking. Reuse the
 		// same storage path as live messages so chats/history populate the UI.
 		a.processHistorySync(v)
+	case *events.Archive:
+		// Chat archived/unarchived from another device (or app state sync).
+		if err := a.messageStore.SetChatArchived(v.JID.String(), v.Action.GetArchived(), v.Timestamp.Unix()); err != nil {
+			log.Println("Failed to store chat archive state:", err)
+		}
+		runtime.EventsEmit(a.ctx, "wa:chat_list_refresh")
 	case *events.Pin:
 		// Chat pinned/unpinned from another device (or during app state sync).
 		if err := a.messageStore.SetChatPinned(v.JID.String(), v.Action.GetPinned(), v.Timestamp.Unix()); err != nil {

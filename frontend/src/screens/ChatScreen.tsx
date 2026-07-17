@@ -6,11 +6,12 @@ import {
   GetCachedAvatar,
   GetSelfAvatar,
   ToggleChatPin,
+  ToggleChatArchive,
 } from "../../wailsjs/go/api/Api"
 import { api } from "../../wailsjs/go/models"
 import { EventsOn } from "../../wailsjs/runtime/runtime"
 import { ChatDetail } from "./ChatDetail"
-import { useChatStore, useChatById, useFilteredChatIds } from "../store"
+import { useChatStore, useChatById, useFilteredChatIds, useArchivedCount } from "../store"
 import { useSelfAvatarStore } from "../store/useSelfAvatarStore"
 import { useChatMuted } from "../store/useMuteStore"
 import type { ChatItem } from "../store/types"
@@ -24,6 +25,7 @@ import {
   MutedBellIcon,
 } from "../assets/svgs/chat_icons"
 import { SearchIcon } from "../assets/svgs/settings_icons"
+import { GoBackIcon } from "../assets/svgs/header_icons"
 import {
   ResizablePanelGroup,
   ResizablePanel,
@@ -259,8 +261,10 @@ export function ChatListScreen({ onOpenSettings }: ChatListScreenProps) {
   const getChat = useChatStore(state => state.getChat)
   const getContactName = useContactStore(state => state.getContactName)
 
+  const [showArchived, setShowArchived] = useState(false)
   // Get filtered chat IDs - only re-renders when IDs or search changes, not on message/timestamp updates
-  const filteredChatIds = useFilteredChatIds()
+  const filteredChatIds = useFilteredChatIds(showArchived)
+  const archivedCount = useArchivedCount()
   const totalChats = useChatStore(state => state.chatIds.length)
 
   const isFetchingRef = useRef(false)
@@ -296,6 +300,7 @@ export function ChatListScreen({ onOpenSettings }: ChatListScreenProps) {
             avatar: avatar,
             sender: senderName || "",
             pinned: c.pinned || false,
+            archived: c.archived || false,
           }
         }),
       )
@@ -381,6 +386,30 @@ export function ChatListScreen({ onOpenSettings }: ChatListScreenProps) {
       store.resortChats()
     }
   }, [chatMenu])
+
+  // Leave the archived view automatically when the last chat is unarchived,
+  // and when switching to Channels/Status tabs.
+  useEffect(() => {
+    if (showArchived && archivedCount === 0) setShowArchived(false)
+  }, [showArchived, archivedCount])
+  useEffect(() => {
+    if (view !== "chats") setShowArchived(false)
+  }, [view])
+
+  const handleToggleArchive = useCallback(async () => {
+    if (!chatMenu) return
+    const { chat } = chatMenu
+    setChatMenu(null)
+    const store = useChatStore.getState()
+    store.updateSingleChat(chat.id, { archived: !chat.archived })
+    try {
+      await ToggleChatArchive(chat.id, !chat.archived)
+    } catch (err) {
+      console.error("Failed to toggle chat archive:", err)
+      store.updateSingleChat(chat.id, { archived: chat.archived })
+    }
+  }, [chatMenu])
+
   const [storyGroup, setStoryGroup] = useState<StatusGroup | null>(null)
   const viewRef = useRef(view)
   viewRef.current = view
@@ -523,6 +552,12 @@ export function ChatListScreen({ onOpenSettings }: ChatListScreenProps) {
           >
             {chatMenu.chat.pinned ? "Unpin chat" : "Pin chat"}
           </button>
+          <button
+            onClick={handleToggleArchive}
+            className="w-full px-4 py-2 text-left text-sm text-gray-800 hover:bg-gray-100 dark:text-gray-100 dark:hover:bg-white/5"
+          >
+            {chatMenu.chat.archived ? "Unarchive chat" : "Archive chat"}
+          </button>
         </div>
       )}
       <ResizablePanelGroup className="h-full">
@@ -556,6 +591,36 @@ export function ChatListScreen({ onOpenSettings }: ChatListScreenProps) {
             ))}
           </div>
           <SearchBar value={searchTerm} onChange={setSearchTerm} />
+
+          {/* Archived entry (main view) / archived header (archived view) */}
+          {!showArchived && view === "chats" && archivedCount > 0 && (
+            <button
+              onClick={() => setShowArchived(true)}
+              className="flex w-full items-center gap-4 px-4 py-3 text-left hover:bg-gray-100 dark:hover:bg-[#202121]"
+            >
+              <span className="flex w-12 justify-center text-[#1b9a58] dark:text-[#21c063]">
+                <svg viewBox="0 0 24 24" width="20" height="20" className="fill-current">
+                  <path d="M20.54 5.23 19.15 3.55A1.5 1.5 0 0 0 18 3H6a1.5 1.5 0 0 0-1.16.55L3.46 5.23A2 2 0 0 0 3 6.5V19a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6.5a2 2 0 0 0-.46-1.27ZM6.24 5h11.52l.81.97H5.44ZM5 19V8h14v11Zm8-5.5V11h-2v2.5H8.5L12 17l3.5-3.5Z" />
+                </svg>
+              </span>
+              <span className="flex-1 font-medium text-light-text dark:text-dark-text">
+                Archived
+              </span>
+              <span className="text-xs text-gray-500 dark:text-[#8696a0]">{archivedCount}</span>
+            </button>
+          )}
+          {showArchived && (
+            <div className="flex items-center gap-4 border-b border-gray-200 px-4 py-3 dark:border-white/5">
+              <button
+                onClick={() => setShowArchived(false)}
+                className="text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200"
+                aria-label="Back to chats"
+              >
+                <GoBackIcon />
+              </button>
+              <span className="font-medium text-light-text dark:text-dark-text">Archived</span>
+            </div>
+          )}
 
           <div className="flex-1 overflow-y-auto">
             {view === "status" ? (

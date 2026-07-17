@@ -164,6 +164,10 @@ func NewMessageStore() (*MessageStore, error) {
 		if err != nil {
 			return err
 		}
+		_, err = tx.Exec(query.CreateArchivedChatsTable)
+		if err != nil {
+			return err
+		}
 		_, err = tx.Exec(query.CreateReactionsTable)
 		if err != nil {
 			return err
@@ -1585,4 +1589,33 @@ func (ms *MessageStore) GetPinnedChats() map[string]int64 {
 		}
 	}
 	return pins
+}
+
+
+// SetChatArchived stores whether a chat is archived.
+func (ms *MessageStore) SetChatArchived(chatJID string, archived bool, ts int64) error {
+	if archived {
+		_, err := ms.db.Exec(query.UpsertArchivedChat, chatJID, ts)
+		return err
+	}
+	_, err := ms.db.Exec(query.DeleteArchivedChat, chatJID)
+	return err
+}
+
+// GetArchivedChats returns chat JID -> archived-at for every archived chat.
+func (ms *MessageStore) GetArchivedChats() map[string]int64 {
+	archived := make(map[string]int64)
+	rows, err := ms.db.Query(query.SelectArchivedChats)
+	if err != nil {
+		return archived
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var jid string
+		var ts int64
+		if rows.Scan(&jid, &ts) == nil {
+			archived[jid] = ts
+		}
+	}
+	return archived
 }

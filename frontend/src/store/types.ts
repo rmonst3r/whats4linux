@@ -8,6 +8,7 @@ export interface ChatItem {
   unreadCount?: number
   sender?: string
   pinned?: boolean
+  archived?: boolean
 }
 
 export interface Message {

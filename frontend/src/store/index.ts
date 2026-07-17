@@ -3,6 +3,7 @@ export {
   useChatById,
   useChatIds,
   useFilteredChatIds,
+  useArchivedCount,
   useChatsArray,
 } from "./useChatStore"
 export { useMessageStore } from "./useMessageStore"
