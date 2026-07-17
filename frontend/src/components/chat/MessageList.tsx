@@ -86,18 +86,32 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
             </div>
           ) : null,
       }}
-      itemContent={(_index, msg) => (
-        <div data-message-id={msg.Info.ID} className="py-1 overflow-x-hidden">
-          <MemoizedMessageItem
-            message={msg}
-            chatId={chatId}
-            sentMediaCache={sentMediaCache}
-            onReply={onReply}
-            onQuotedClick={onQuotedClick}
-            highlightedMessageId={highlightedMessageId}
-          />
-        </div>
-      )}
+      itemContent={(_index, msg) => {
+        // WhatsApp-style grouping: consecutive messages from the same sender
+        // form a run — only the first shows the sender name/avatar, and runs
+        // are separated by a larger gap than messages within a run.
+        const prev = messages[_index - firstItemIndex - 1]
+        const firstInGroup =
+          !prev ||
+          prev.Info.IsFromMe !== msg.Info.IsFromMe ||
+          prev.Info.Sender !== msg.Info.Sender
+        return (
+          <div
+            data-message-id={msg.Info.ID}
+            className={firstInGroup ? "pt-2 pb-px overflow-x-hidden" : "py-px overflow-x-hidden"}
+          >
+            <MemoizedMessageItem
+              message={msg}
+              chatId={chatId}
+              firstInGroup={firstInGroup}
+              sentMediaCache={sentMediaCache}
+              onReply={onReply}
+              onQuotedClick={onQuotedClick}
+              highlightedMessageId={highlightedMessageId}
+            />
+          </div>
+        )
+      }}
     />
   )
 })

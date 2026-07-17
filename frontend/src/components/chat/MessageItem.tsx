@@ -1,7 +1,7 @@
 import React, { useState, useEffect, lazy, Suspense } from "react"
 import emojiData from "@emoji-mart/data"
 import { store } from "../../../wailsjs/go/models"
-import { DownloadImageToFile, SendReaction } from "../../../wailsjs/go/api/Api"
+import { DownloadImageToFile, GetCachedAvatar, SendReaction } from "../../../wailsjs/go/api/Api"
 import { MediaContent } from "./MediaContent"
 import { QuotedMessage } from "./QuotedMessage"
 import { ReactionBubble } from "./Reactions"
@@ -20,11 +20,44 @@ const EmojiPicker = lazy(() => import("@emoji-mart/react"))
 interface MessageItemProps {
   message: store.DecodedMessage
   chatId: string
+  firstInGroup?: boolean
   sentMediaCache: React.MutableRefObject<Map<string, string>>
   onReply?: (message: store.DecodedMessage) => void
   onQuotedClick?: (messageId: string) => void
   highlightedMessageId?: string | null
 }
+
+// Module-level cache: one avatar lookup per sender per session, shared by
+// every message row (Virtuoso mounts/unmounts rows constantly).
+const senderAvatarCache = new Map<string, string | null>()
+
+function SenderAvatar({ jid }: { jid: string }) {
+  const [url, setUrl] = useState<string | null>(senderAvatarCache.get(jid) ?? null)
+
+  useEffect(() => {
+    if (!jid || senderAvatarCache.has(jid)) return
+    let live = true
+    GetCachedAvatar(jid, false)
+      .then(u => {
+        senderAvatarCache.set(jid, u || null)
+        if (live) setUrl(u || null)
+      })
+      .catch(() => senderAvatarCache.set(jid, null))
+    return () => {
+      live = false
+    }
+  }, [jid])
+
+  return (
+    <div className="w-7 h-7 ml-3 rounded-full overflow-hidden bg-gray-300 dark:bg-gray-600 shrink-0 self-start flex items-center justify-center">
+      {url ? <img src={url} className="w-full h-full object-cover" /> : null}
+    </div>
+  )
+}
+
+// Detect emoji-only messages so they render large without a visible change
+// in bubble chrome, like WhatsApp.
+const EMOJI_ONLY_RE = /^[\p{Extended_Pictographic}\p{Emoji_Component}\u{FE0F}\u{200D}\s]+$/u
 
 const formatSize = (bytes: number) => {
   if (!bytes) return "0 B"
@@ -37,6 +70,7 @@ const formatSize = (bytes: number) => {
 export function MessageItem({
   message,
   chatId,
+  firstInGroup = true,
   sentMediaCache,
   onReply,
   onQuotedClick,
@@ -165,13 +199,43 @@ export function MessageItem({
     content?.documentMessage?.contextInfo ||
     content?.stickerMessage?.contextInfo
 
+  const isTextContent = !!(content?.conversation || content?.extendedTextMessage?.text)
+
+  // Inline metadata (time + ticks). For text messages it floats into the last
+  // line WhatsApp-style; for media/documents it renders as a bottom row.
+  const timeMeta = (floated: boolean) => (
+    <span
+      className={clsx(
+        "inline-flex items-center gap-1 text-[11px] leading-none opacity-60 select-none whitespace-nowrap",
+        floated && "float-right ml-2 mt-2",
+      )}
+    >
+      {message.edited && <span>Edited</span>}
+      <span>
+        {new Date(message.Info.Timestamp).toLocaleTimeString([], {
+          hour: "numeric",
+          minute: "2-digit",
+        })}
+      </span>
+      {isFromMe && (isPending ? <ClockPendingIcon /> : <BlueTickIcon />)}
+    </span>
+  )
+
   const renderContent = () => {
     if (!content) return <span className="italic opacity-50">Empty Message</span>
     else if (content.conversation || content.extendedTextMessage?.text) {
       const htmlContent = content.conversation || content.extendedTextMessage?.text || ""
+      const stripped = htmlContent
+        .replace(/<[^>]*>/g, "")
+        .replace(/&\w+;/g, "")
+        .trim()
+      const emojiOnly = stripped.length > 0 && stripped.length <= 16 && EMOJI_ONLY_RE.test(stripped)
       return (
         <>
-          <div className="pr-5" dangerouslySetInnerHTML={{ __html: htmlContent }} />
+          <div className={clsx("[display:flow-root]", emojiOnly && "text-[32px] leading-10")}>
+            <span dangerouslySetInnerHTML={{ __html: htmlContent }} />
+            {timeMeta(true)}
+          </div>
           {htmlContent.includes('class="msg-link"') && <LinkPreview messageId={message.Info.ID} />}
         </>
       )
@@ -263,19 +327,33 @@ export function MessageItem({
     <>
       <div
         className={clsx(
-          "flex mb-2 group transition duration-200",
+          "flex group transition duration-200",
           isFromMe ? "justify-end" : "justify-start",
           {
             "bg-[#21C063]/50 dark:bg-[#21C063]/40": highlightedMessageId === message.Info.ID,
           },
         )}
       >
+        {/* Sender avatar column (group chats, received): avatar on the first
+            message of a run, an equally wide spacer on the rest. */}
+        {!isFromMe &&
+          isGroup &&
+          (firstInGroup ? (
+            <SenderAvatar jid={message.Info.Sender} />
+          ) : (
+            <div className="w-7 ml-3 shrink-0" />
+          ))}
         <div
           className={clsx(
-            "max-w-[85%] lg:max-w-[65%] rounded-lg p-2 mx-5 relative min-w-0",
+            "max-w-[85%] lg:max-w-[65%] rounded-xl px-2 pt-1 pb-1.5 relative min-w-0",
+            !isFromMe && isGroup ? "ml-2 mr-5" : "mx-5",
             {
               "w-min": hasMedia,
               "bg-transparent shadow-none": isSticker,
+              // WhatsApp sharpens the corner facing the sender on the first
+              // bubble of a run.
+              "rounded-tl-[4px]": firstInGroup && !isFromMe && !isSticker,
+              "rounded-tr-[4px]": firstInGroup && isFromMe && !isSticker,
 
               // SENT
               "bg-sent-bubble-bg dark:bg-sent-bubble-dark-bg text-(--color-sent-bubble-text) dark:text-(--color-sent-bubble-dark-text)":
@@ -366,8 +444,8 @@ export function MessageItem({
             onDelete={handleDelete}
           />
 
-          {!isFromMe && chatId.endsWith("@g.us") && (
-            <div className="flex items-baseline justify-between gap-4 mb-0.5">
+          {!isFromMe && chatId.endsWith("@g.us") && firstInGroup && (
+            <div className="flex items-baseline justify-between gap-4 mb-0.5 pt-0.5">
               <span
                 className="text-[11px] font-semibold truncate"
                 style={{ color: senderColor }}
@@ -393,16 +471,7 @@ export function MessageItem({
             <QuotedMessage contextInfo={contextInfo} onQuotedClick={onQuotedClick} />
           )}
           <div className="text-sm break-words whitespace-pre-wrap">{renderContent()}</div>
-          <div className="text-[11px] text-right opacity-60 mt-1 flex items-center justify-end gap-1">
-            {message.edited && <span>Edited</span>}
-            <span>
-              {new Date(message.Info.Timestamp).toLocaleTimeString([], {
-                hour: "2-digit",
-                minute: "2-digit",
-              })}
-            </span>
-            {isFromMe && (isPending ? <ClockPendingIcon /> : <BlueTickIcon />)}
-          </div>
+          {!isTextContent && <div className="mt-1 flex justify-end">{timeMeta(false)}</div>}
 
           {/* Reactions */}
           {reactions.length > 0 && (

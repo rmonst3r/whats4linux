@@ -120,7 +120,7 @@ const ChatListItemContent = memo(({ chat, isSelected, onSelect }: ChatListItemCo
         >
           {chat.timestamp
             ? new Date(chat.timestamp * 1000).toLocaleTimeString([], {
-                hour: "2-digit",
+                hour: "numeric",
                 minute: "2-digit",
               })
             : "yesterday"}
