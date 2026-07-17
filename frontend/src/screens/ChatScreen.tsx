@@ -396,6 +396,23 @@ export function ChatListScreen({ onOpenSettings }: ChatListScreenProps) {
     if (view !== "chats") setShowArchived(false)
   }, [view])
 
+  // ESC leaves the archived view (and closes the context menu). When a chat
+  // is open, ChatDetail's own ESC handler takes precedence — skip here so a
+  // single press doesn't trigger both.
+  useEffect(() => {
+    if (!showArchived && !chatMenu) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return
+      if (chatMenu) {
+        setChatMenu(null)
+        return
+      }
+      if (!useChatStore.getState().selectedChatId) setShowArchived(false)
+    }
+    window.addEventListener("keydown", onKey)
+    return () => window.removeEventListener("keydown", onKey)
+  }, [showArchived, chatMenu])
+
   const handleToggleArchive = useCallback(async () => {
     if (!chatMenu) return
     const { chat } = chatMenu
