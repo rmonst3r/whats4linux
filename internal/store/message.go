@@ -160,6 +160,10 @@ func NewMessageStore() (*MessageStore, error) {
 		if err != nil {
 			return err
 		}
+		_, err = tx.Exec(query.CreateMutedChatsTable)
+		if err != nil {
+			return err
+		}
 		_, err = tx.Exec(query.CreateReactionsTable)
 		if err != nil {
 			return err
