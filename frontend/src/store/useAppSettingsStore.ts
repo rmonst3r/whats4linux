@@ -92,6 +92,17 @@ export const useAppSettingsStore = create<AppSettingsStore>((set, get) => ({
       }
       merged.theme = normalizeTheme(merged.theme)
 
+      // Older builds shipped a black light-mode toggle knob (#000000) as the
+      // default and persisted it into saved settings. Rewrite that stale
+      // default to white so existing installs pick up the readable knob.
+      const savedToggleCircle: string | undefined = merged.themeColors?.Button?.["toggle circle"]
+      if (savedToggleCircle === "#000000") {
+        merged.themeColors = {
+          ...merged.themeColors,
+          Button: { ...merged.themeColors.Button, "toggle circle": "#ffffff" },
+        }
+      }
+
       applyThemeColors(merged.themeColors)
       useEaseStore.setState({ eases: merged.eases })
       cacheTheme(merged.theme)

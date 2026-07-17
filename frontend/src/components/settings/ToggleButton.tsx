@@ -41,7 +41,7 @@ const ToggleButton = ({ isEnabled, onToggle }: ToggleButtonProps) => {
     >
       <div
         ref={circleRef}
-        className="size-5 rounded-full bg-toggle-circle dark:bg-toggle-dark-circle shadow-md"
+        className="size-5 rounded-full bg-toggle-circle dark:bg-toggle-dark-circle border border-black/10 dark:border-transparent shadow-md"
       />
     </div>
   )

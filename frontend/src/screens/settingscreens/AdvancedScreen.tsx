@@ -130,7 +130,7 @@ function Section({
   buttonColor: "blue" | "gray"
 }) {
   const colors = {
-    blue: "bg-blue-500 hover:bg-blue-600",
+    blue: "bg-blue-500 hover:bg-blue-600 text-white",
     gray: "bg-gray-200 dark:bg-gray-700 hover:bg-gray-300 dark:hover:bg-gray-600 text-gray-800 dark:text-white",
   }
 
@@ -140,7 +140,7 @@ function Section({
       <p className="text-sm text-gray-500 dark:text-gray-400 mb-4">{description}</p>
       <button
         onClick={onClick}
-        className={`px-4 py-2 text-white rounded transition-colors ${colors[buttonColor]}`}
+        className={`px-4 py-2 rounded transition-colors ${colors[buttonColor]}`}
       >
         {buttonText}
       </button>

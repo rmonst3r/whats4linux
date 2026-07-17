@@ -29,7 +29,7 @@ export const THEME = {
     "toggle closed": "#4a5565",
     "toggle dark closed": "#4a5565",
 
-    "toggle circle": "#000000",
+    "toggle circle": "#ffffff",
     "toggle dark circle": "#ffffff",
   },
 

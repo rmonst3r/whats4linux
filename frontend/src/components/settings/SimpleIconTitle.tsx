@@ -29,7 +29,7 @@ const SimpleIconTitle = ({
     <div
       className={clsx(
         "flex flex-row items-center gap-4 w-full p-4 rounded-xl",
-        clickable && "cursor-pointer hover:bg-hover-icons",
+        clickable && "cursor-pointer hover:bg-gray-100 dark:hover:bg-hover-icons",
       )}
       onClick={handleClick}
     >
