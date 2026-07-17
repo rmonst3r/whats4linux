@@ -329,6 +329,8 @@ export function MessageItem({
         className={clsx(
           "flex group transition duration-200",
           isFromMe ? "justify-end" : "justify-start",
+          // Reserve room for the reaction pill overhanging the bubble bottom.
+          reactions.length > 0 && "mb-3",
           {
             "bg-[#21C063]/50 dark:bg-[#21C063]/40": highlightedMessageId === message.Info.ID,
           },

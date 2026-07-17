@@ -95,11 +95,11 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
           !prev ||
           prev.Info.IsFromMe !== msg.Info.IsFromMe ||
           prev.Info.Sender !== msg.Info.Sender
+        // No overflow-hidden on the row: hiding one axis forces the other to
+        // 'auto', which clips the reaction pills that hang below bubbles.
+        // Horizontal overflow is already contained at the panel level.
         return (
-          <div
-            data-message-id={msg.Info.ID}
-            className={firstInGroup ? "pt-2 pb-px overflow-x-hidden" : "py-px overflow-x-hidden"}
-          >
+          <div data-message-id={msg.Info.ID} className={firstInGroup ? "pt-2 pb-px" : "py-px"}>
             <MemoizedMessageItem
               message={msg}
               chatId={chatId}
