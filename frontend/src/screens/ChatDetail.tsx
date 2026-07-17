@@ -480,10 +480,7 @@ export function ChatDetail({ chatId, chatName, chatAvatar, onBack }: ChatDetailP
         <div className="flex-1 relative overflow-hidden">
           {/* Static chat wallpaper: painted once behind the list instead of
               scrolling (and repainting) with it — big scroll-perf win. */}
-          <div
-            className="absolute inset-0 bg-repeat pointer-events-none z-0"
-            style={{ backgroundImage: "url('/assets/images/bg-chat-tile-dark.png')" }}
-          />
+          <div className="chat-wallpaper absolute inset-0 pointer-events-none z-0" />
           {(initialLoad || !isReady) && (
             <div className="absolute inset-0 flex items-center justify-center bg-[#efeae2] dark:bg-dark-bg z-50">
               <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-green-500" />
