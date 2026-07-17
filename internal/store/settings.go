@@ -55,6 +55,14 @@ func SaveSettings(data map[string]any) error {
 	settingsInstance.mu.Lock()
 	defer settingsInstance.mu.Unlock()
 
+	// The frontend saves its own settings snapshot, which doesn't include
+	// backend-owned keys — carry them over so a generic save can't clobber
+	// them (that reset the notification switch back to its default).
+	if _, ok := data[notificationsKey]; !ok {
+		if cur, ok := settingsInstance.data[notificationsKey]; ok {
+			data[notificationsKey] = cur
+		}
+	}
 	settingsInstance.data = data
 	// Keep the cached switch in sync in case the whole settings map was
 	// replaced by the frontend.

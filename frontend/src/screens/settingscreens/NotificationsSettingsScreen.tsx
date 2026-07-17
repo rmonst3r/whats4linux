@@ -6,7 +6,6 @@ import { EventsOn } from "../../../wailsjs/runtime/runtime"
 
 const NotificationsSettingsScreen = () => {
   const {
-    messageNotifications,
     showPreviews,
     showReactionNotifications,
     statusReactions,
@@ -62,16 +61,10 @@ const NotificationsSettingsScreen = () => {
   return (
     <div className="flex flex-col gap-4">
       <SettingButtonDesc
-        title="Desktop notifications"
+        title="Message notifications"
         description="Show desktop notifications for incoming messages"
         onToggle={handleToggleDesktopNotifications}
         isEnabled={desktopNotifications}
-      />
-      <SettingButtonDesc
-        title="Message notifications"
-        description="Show notifications for new messages"
-        onToggle={() => updateSetting("messageNotifications", !messageNotifications)}
-        isEnabled={messageNotifications}
       />
       <SettingButtonDesc
         title="Show previews"
