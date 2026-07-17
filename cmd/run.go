@@ -15,14 +15,18 @@ import (
 )
 
 func run(assets fs.FS) cli.ActionFunc {
-	store.LoadSettings()
-	defer store.CloseSettings()
-
 	// Create an instance of the app structure
 	api := apiPkg.New()
 
 	// Create application with options
 	return func(ctx *cli.Context) error {
+		// Load settings inside the action so the file handle stays open for
+		// the whole app lifetime. Doing this in run() itself closed the file
+		// (via the deferred CloseSettings) before wails.Run even started,
+		// silently breaking every SaveSettings call.
+		store.LoadSettings()
+		defer store.CloseSettings()
+
 		return wails.Run(&options.App{
 			Title:  misc.APP_NAME,
 			Width:  1024,

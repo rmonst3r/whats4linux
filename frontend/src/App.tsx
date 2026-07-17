@@ -10,6 +10,7 @@ import { Lightbox } from "./components/Lightbox"
 
 import { useUIStore } from "./store"
 import { useAppSettingsStore } from "./store/useAppSettingsStore"
+import { applyThemeClass } from "./lib/theme"
 
 type Screen = "login" | "chats" | "settings"
 
@@ -18,7 +19,7 @@ function App() {
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const [status, setStatus] = useState<string>("waiting")
 
-  const { theme, toggleTheme, loaded } = useAppSettingsStore()
+  const { theme, loaded } = useAppSettingsStore()
   const { notifications, addNotification, removeNotification } = useUIStore()
 
   useEffect(() => {
@@ -27,11 +28,7 @@ function App() {
 
   useEffect(() => {
     if (loaded) {
-      if (theme === "dark") {
-        document.documentElement.classList.add("dark")
-      } else {
-        document.documentElement.classList.remove("dark")
-      }
+      applyThemeClass(theme)
     }
   }, [theme, loaded])
 

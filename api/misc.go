@@ -34,8 +34,8 @@ func (a *Api) Reinitialize() error {
 	return a.cw.Initialise(a.waClient)
 }
 
-func (a *Api) SaveSettings(s map[string]any) {
-	store.SaveSettings(s)
+func (a *Api) SaveSettings(s map[string]any) error {
+	return store.SaveSettings(s)
 }
 
 func (a *Api) GetSettings() map[string]any {

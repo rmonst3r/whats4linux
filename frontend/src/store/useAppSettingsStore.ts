@@ -1,6 +1,7 @@
 import { create } from "zustand"
 import { GetSettings, SaveSettings } from "../../wailsjs/go/api/Api"
 import { DEFAULT_EASES, THEME, applyThemeColors } from "../theme.config"
+import { cacheTheme, normalizeTheme, readCachedTheme } from "../lib/theme"
 import { useEaseStore } from "./useEaseStore"
 
 interface AppSettingsStore extends AppSettings {
@@ -89,26 +90,33 @@ export const useAppSettingsStore = create<AppSettingsStore>((set, get) => ({
         ...defaultSettings,
         ...(saved ?? {}),
       }
+      merged.theme = normalizeTheme(merged.theme)
 
       applyThemeColors(merged.themeColors)
       useEaseStore.setState({ eases: merged.eases })
+      cacheTheme(merged.theme)
 
       set({
         ...merged,
         loaded: true,
       })
     } catch (err) {
-      // fallback to defaults
+      // fallback to defaults, but keep the locally cached theme so a backend
+      // failure does not flip a dark-mode user back to light
       applyThemeColors(defaultSettings.themeColors)
       useEaseStore.setState({ eases: defaultSettings.eases })
 
-      set({ loaded: true })
+      set({ theme: readCachedTheme(), loaded: true })
     }
   },
 
   updateSetting: async (key, value) => {
     set(state => {
       const next = { ...state, [key]: value }
+
+      if (key === "theme") {
+        cacheTheme(next.theme)
+      }
 
       SaveSettings(extractSettings(next)).catch(err => {
         console.error("Failed to save setting:", err)
