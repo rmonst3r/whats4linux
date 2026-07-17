@@ -11,6 +11,13 @@ type ChatElement struct {
 	LatestTS      int64
 	Sender        string
 	Contact
+
+	// Community linkage (populated for groups that belong to a community).
+	ParentJID         string `json:"parent_jid,omitempty"`
+	ParentName        string `json:"parent_name,omitempty"`
+	IsCommunityGroup  bool   `json:"is_community_group"`
+	IsCommunityParent bool   `json:"is_community_parent"`
+	IsDefaultSubGroup bool   `json:"is_default_sub_group"`
 }
 
 func (a *Api) GetChatList() ([]ChatElement, error) {
@@ -18,6 +25,9 @@ func (a *Api) GetChatList() ([]ChatElement, error) {
 	ce := make([]ChatElement, len(cmList))
 	for i, cm := range cmList {
 		var fc Contact
+		var parentJID, parentName string
+		var isCommunityGroup, isCommunityParent, isDefaultSub bool
+
 		if cm.JID.Server == types.GroupServer {
 			groupInfo, err := a.cw.FetchGroup(cm.JID.String())
 			if err != nil {
@@ -33,6 +43,14 @@ func (a *Api) GetChatList() ([]ChatElement, error) {
 					JID:      cm.JID.String(),
 					FullName: groupInfo.Name,
 				}
+				parentJID = groupInfo.ParentJID
+				parentName = groupInfo.ParentName
+				if parentName == "" && parentJID != "" && a.cw != nil {
+					parentName = a.cw.ParentCommunityName(parentJID)
+				}
+				isCommunityGroup = parentJID != ""
+				isCommunityParent = groupInfo.IsParent
+				isDefaultSub = groupInfo.IsDefaultSub
 			}
 		} else {
 			contact, err := a.waClient.Store.Contacts.GetContact(a.ctx, cm.JID)
@@ -54,10 +72,15 @@ func (a *Api) GetChatList() ([]ChatElement, error) {
 			}
 		}
 		ce[i] = ChatElement{
-			LatestMessage: cm.MessageText,
-			LatestTS:      cm.MessageTime,
-			Sender:        cm.Sender,
-			Contact:       fc,
+			LatestMessage:     cm.MessageText,
+			LatestTS:          cm.MessageTime,
+			Sender:            cm.Sender,
+			Contact:           fc,
+			ParentJID:         parentJID,
+			ParentName:        parentName,
+			IsCommunityGroup:  isCommunityGroup,
+			IsCommunityParent: isCommunityParent,
+			IsDefaultSubGroup: isDefaultSub,
 		}
 	}
 	return ce, nil

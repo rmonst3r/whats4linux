@@ -14,7 +14,6 @@ import { useSelfAvatarStore } from "../store/useSelfAvatarStore"
 import type { ChatItem } from "../store/types"
 import { StatusList, StoryViewer, type StatusGroup } from "../components/chat/Status"
 import {
-  GroupIcon,
   UserAvatar,
   NewChatIcon,
   MenuIcon,
@@ -27,6 +26,17 @@ import {
   ResizableHandle,
 } from "../components/common/resizable"
 import { useContactStore } from "@/store/useContactStore"
+import {
+  CommunityList,
+  CommunityHome,
+  CommunitiesWelcome,
+} from "../components/chat/Communities"
+import {
+  getAvatarColor,
+  AVATAR_ICON_COLOR,
+  AVATAR_ICON_ON_DARK,
+} from "../lib/utils"
+import { useAppSettingsStore } from "../store/useAppSettingsStore"
 
 interface HeaderProps {
   onOpenSettings: () => void
@@ -60,9 +70,14 @@ const Header = ({ onOpenSettings, avatar }: HeaderProps) => (
 interface SearchBarProps {
   value: string
   onChange: (value: string) => void
+  placeholder?: string
 }
 
-const SearchBar = ({ value, onChange }: SearchBarProps) => (
+const SearchBar = ({
+  value,
+  onChange,
+  placeholder = "Search or start new chat",
+}: SearchBarProps) => (
   <div className="px-3 py-2 bg-light-bg dark:bg-dark-bg">
     <div className="bg-light-tertiary dark:bg-[#242626] rounded-full flex items-center px-4 py-2">
       <div className="text-gray-500 dark:text-gray-400 mr-4">
@@ -70,7 +85,7 @@ const SearchBar = ({ value, onChange }: SearchBarProps) => (
       </div>
       <input
         type="text"
-        placeholder="Search or start new chat"
+        placeholder={placeholder}
         className="bg-transparent border-none outline-none text-sm w-full text-light-text dark:text-dark-text placeholder-gray-500"
         value={value}
         onChange={e => onChange(e.target.value)}
@@ -79,17 +94,129 @@ const SearchBar = ({ value, onChange }: SearchBarProps) => (
   </div>
 )
 
-// Memoized ChatAvatar - only re-renders if avatar changes
+/** Multi-person silhouette used on community / group placeholders. */
+const PeopleIcon = ({
+  size = 22,
+  color = AVATAR_ICON_COLOR,
+}: {
+  size?: number
+  color?: string
+}) => (
+  <svg viewBox="0 0 24 24" width={size} height={size} fill={color} aria-hidden>
+    <path d="M16 11c1.66 0 2.99-1.34 2.99-3S17.66 5 16 5c-1.66 0-3 1.34-3 3s1.34 3 3 3zm-8 0c1.66 0 2.99-1.34 2.99-3S9.66 5 8 5C6.34 5 5 6.34 5 8s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5c0-2.33-4.67-3.5-7-3.5zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V19h6v-2.5c0-2.33-4.67-3.5-7-3.5z" />
+  </svg>
+)
+
+// Memoized ChatAvatar — pastel placeholder when no photo (matches WA).
 const MemoizedChatAvatar = memo(
-  ({ avatar, type, name }: { avatar?: string; type: "group" | "contact"; name: string }) => {
+  ({
+    avatar,
+    type,
+    name,
+    jid,
+    dark,
+  }: {
+    avatar?: string
+    type: "group" | "contact"
+    name: string
+    jid?: string
+    dark?: boolean
+  }) => {
     if (avatar) {
       return <img src={avatar} alt={name} className="w-full h-full object-cover" />
     }
-    return type === "group" ? <GroupIcon /> : <UserAvatar />
+    const bg = getAvatarColor(jid || name, dark)
+    return (
+      <div
+        className="w-full h-full flex items-center justify-center"
+        style={{ backgroundColor: bg }}
+      >
+        {type === "group" ? (
+          <PeopleIcon size={26} color={AVATAR_ICON_COLOR} />
+        ) : (
+          // Single-person silhouette (same dark ink as WA placeholders).
+          <svg viewBox="0 0 48 48" className="w-full h-full p-1.5" fill={AVATAR_ICON_COLOR} aria-hidden>
+            <path d="M24 23q-1.857 0-3.178-1.322Q19.5 20.357 19.5 18.5t1.322-3.178T24 14t3.178 1.322Q28.5 16.643 28.5 18.5t-1.322 3.178T24 23m-6.75 10q-.928 0-1.59-.66-.66-.662-.66-1.59v-.9q0-.956.492-1.758A3.3 3.3 0 0 1 16.8 26.87a16.7 16.7 0 0 1 3.544-1.308q1.8-.435 3.656-.436 1.856 0 3.656.436T31.2 26.87q.816.422 1.308 1.223T33 29.85v.9q0 .928-.66 1.59-.662.66-1.59.66z" />
+          </svg>
+        )}
+      </div>
+    )
   },
 )
 
 MemoizedChatAvatar.displayName = "MemoizedChatAvatar"
+
+/**
+ * WhatsApp community stacked avatar:
+ * - Back: rounded-square community badge
+ * - Front: circular group photo
+ * Both badges are the same size (compact, matches regular chat avatars).
+ */
+const CommunityStackedAvatar = memo(
+  ({
+    communityAvatar,
+    groupAvatar,
+    communityName,
+    groupName,
+    communityJid,
+    groupJid,
+    dark,
+  }: {
+    communityAvatar?: string
+    groupAvatar?: string
+    communityName: string
+    groupName: string
+    communityJid?: string
+    groupJid?: string
+    dark?: boolean
+  }) => {
+    const communityBg = getAvatarColor(communityJid || communityName, dark)
+    // Ring matches chat-list surface so the stack punches out cleanly.
+    const ring = dark ? "#161717" : "#ffffff"
+    // Same size for both badges (~32px) inside a 48px cell.
+    const badge = "w-8 h-8"
+
+    return (
+      <div className="relative w-12 h-12 shrink-0 mr-4">
+        {/* Community — rounded square */}
+        <div
+          className={clsx(
+            "absolute left-0 top-0 overflow-hidden flex items-center justify-center rounded-[8px]",
+            badge,
+          )}
+          style={{ backgroundColor: communityBg }}
+        >
+          {communityAvatar ? (
+            <img src={communityAvatar} alt="" className="w-full h-full object-cover" />
+          ) : (
+            <PeopleIcon size={18} color={AVATAR_ICON_COLOR} />
+          )}
+        </div>
+        {/* Group — same-size circle, bottom-right */}
+        <div
+          className={clsx(
+            "absolute right-0 bottom-0 overflow-hidden flex items-center justify-center rounded-full",
+            badge,
+          )}
+          style={{ boxShadow: `0 0 0 2px ${ring}` }}
+        >
+          {groupAvatar ? (
+            <img src={groupAvatar} alt={groupName} className="w-full h-full object-cover" />
+          ) : (
+            <div
+              className="w-full h-full flex items-center justify-center"
+              style={{ backgroundColor: dark ? "#2a3942" : "#111b21" }}
+            >
+              <PeopleIcon size={16} color={AVATAR_ICON_ON_DARK} />
+            </div>
+          )}
+        </div>
+      </div>
+    )
+  },
+)
+
+CommunityStackedAvatar.displayName = "CommunityStackedAvatar"
 
 interface ChatListItemContentProps {
   chat: ChatItem
@@ -98,54 +225,89 @@ interface ChatListItemContentProps {
 }
 
 // Pure presentational component - memoized to prevent unnecessary re-renders
-const ChatListItemContent = memo(({ chat, isSelected, onSelect }: ChatListItemContentProps) => (
-  <div
-    onClick={() => onSelect(chat)}
-    className={clsx(
-      "flex items-center px-4 py-3 cursor-pointer",
-      "hover:bg-gray-100 dark:hover:bg-[#202121]",
-      isSelected && "bg-gray-200 dark:bg-[#2e2f2f]",
-    )}
-  >
-    <div className="w-12 h-12 rounded-full bg-gray-300 dark:bg-gray-600 mr-4 shrink-0 overflow-hidden flex items-center justify-center">
-      <MemoizedChatAvatar avatar={chat.avatar} type={chat.type} name={chat.name} />
-    </div>
-    <div className="flex-1 min-w-0">
-      <div className="flex justify-between items-baseline mb-1">
-        <h3 className="text-light-text dark:text-dark-text font-medium truncate">{chat.name}</h3>
-        <span
-          className={clsx(
-            "text-xs",
-            chat.unreadCount
-              ? "font-medium text-[#1b9a58] dark:text-[#21c063]"
-              : "text-gray-500 dark:text-[#8696a0]",
-          )}
-        >
-          {chat.timestamp
-            ? new Date(chat.timestamp * 1000).toLocaleTimeString([], {
-                hour: "2-digit",
-                minute: "2-digit",
-              })
-            : "yesterday"}
-        </span>
-      </div>
-      <div className="flex items-center gap-2">
-        <div className="flex-1 text-sm text-gray-500 dark:text-[#8696a0] truncate [&_p]:inline [&_p]:m-0 ">
-          {chat.sender && chat.type === "group" && <span className="mr-1">{chat.sender}: </span>}
-          <span
-            className="[&_br]:hidden no-formatting"
-            dangerouslySetInnerHTML={{ __html: chat.subtitle }}
+const ChatListItemContent = memo(({ chat, isSelected, onSelect }: ChatListItemContentProps) => {
+  const theme = useAppSettingsStore(s => s.theme)
+  const dark = theme === "dark"
+  // Stacked logo whenever the group is linked to a community (name optional).
+  const isCommunityChat = Boolean(chat.isCommunityGroup && chat.communityJid)
+  // Group name is the title; community name sits above it, dimmed, same font size.
+  const groupName = chat.name
+  const communityName = isCommunityChat
+    ? chat.communityName || "Community"
+    : null
+
+  return (
+    <div
+      onClick={() => onSelect(chat)}
+      className={clsx(
+        "flex items-center px-4 py-3 cursor-pointer",
+        "hover:bg-gray-100 dark:hover:bg-[#202121]",
+        isSelected && "bg-gray-200 dark:bg-[#2e2f2f]",
+      )}
+    >
+      {isCommunityChat ? (
+        <CommunityStackedAvatar
+          communityAvatar={chat.communityAvatar}
+          groupAvatar={chat.avatar}
+          communityName={chat.communityName || ""}
+          groupName={chat.name}
+          communityJid={chat.communityJid}
+          groupJid={chat.id}
+          dark={dark}
+        />
+      ) : (
+        <div className="w-12 h-12 rounded-full mr-4 shrink-0 overflow-hidden flex items-center justify-center">
+          <MemoizedChatAvatar
+            avatar={chat.avatar}
+            type={chat.type}
+            name={chat.name}
+            jid={chat.id}
+            dark={dark}
           />
         </div>
-        {chat.unreadCount ? (
-          <span className="shrink-0 min-w-5 h-5 px-1.5 flex items-center justify-center rounded-full bg-[#21c063] text-[#0a1014] text-xs font-semibold">
-            {chat.unreadCount > 99 ? "99+" : chat.unreadCount}
+      )}
+      <div className="flex-1 min-w-0">
+        {communityName && (
+          <div className="text-[15px] leading-snug text-gray-500 dark:text-[#8696a0] truncate">
+            {communityName}
+          </div>
+        )}
+        <div className="flex justify-between items-baseline gap-2">
+          <h3
+            className={clsx(
+              "text-[15px] leading-snug truncate text-light-text dark:text-dark-text",
+              chat.unreadCount ? "font-medium" : "font-normal",
+            )}
+          >
+            {groupName}
+          </h3>
+          <span className="text-xs shrink-0 text-gray-500 dark:text-[#8696a0]">
+            {chat.timestamp
+              ? new Date(chat.timestamp * 1000).toLocaleTimeString([], {
+                  hour: "2-digit",
+                  minute: "2-digit",
+                })
+              : "yesterday"}
           </span>
-        ) : null}
+        </div>
+        <div className="flex items-center gap-2">
+          <div className="flex-1 text-sm text-gray-500 dark:text-[#8696a0] truncate [&_p]:inline [&_p]:m-0 ">
+            {chat.sender && chat.type === "group" && <span className="mr-1">{chat.sender}: </span>}
+            <span
+              className="[&_br]:hidden no-formatting"
+              dangerouslySetInnerHTML={{ __html: chat.subtitle }}
+            />
+          </div>
+          {chat.unreadCount ? (
+            <span className="shrink-0 min-w-5 h-5 px-1.5 flex items-center justify-center rounded-full bg-[#21c063] text-[#0a1014] text-xs font-semibold">
+              {chat.unreadCount > 99 ? "99+" : chat.unreadCount}
+            </span>
+          ) : null}
+        </div>
       </div>
     </div>
-  </div>
-))
+  )
+})
 
 ChatListItemContent.displayName = "ChatListItemContent"
 
@@ -233,17 +395,61 @@ export function ChatListScreen({ onOpenSettings }: ChatListScreenProps) {
   const mountedRef = useRef(true)
   const initialFetchDoneRef = useRef(false)
 
+  type SidebarView = "chats" | "communities" | "channels" | "status"
+  const [view, setView] = useState<SidebarView>("chats")
+  const [storyGroup, setStoryGroup] = useState<StatusGroup | null>(null)
+  const [selectedCommunity, setSelectedCommunity] = useState<api.CommunitySummary | null>(null)
+  // When opening a group from a community home, remember community so Back returns there.
+  const [communityReturn, setCommunityReturn] = useState<api.CommunitySummary | null>(null)
+  const viewRef = useRef(view)
+  viewRef.current = view
+
   const handleChatSelect = useCallback(
     (chat: ChatItem) => {
+      setSelectedCommunity(null)
+      setCommunityReturn(null)
       selectChat(chat)
       clearUnreadCount(chat.id)
     },
     [selectChat, clearUnreadCount],
   )
 
+  const handleCommunitySelect = useCallback(
+    (community: api.CommunitySummary) => {
+      selectChat(null)
+      setCommunityReturn(null)
+      setSelectedCommunity(community)
+    },
+    [selectChat],
+  )
+
+  const handleOpenGroupFromCommunity = useCallback(
+    (jid: string, name: string, avatar?: string) => {
+      if (selectedCommunity) {
+        setCommunityReturn(selectedCommunity)
+      }
+      setSelectedCommunity(null)
+      const chat: ChatItem = {
+        id: jid,
+        name,
+        subtitle: "",
+        type: "group",
+        avatar,
+      }
+      selectChat(chat)
+      clearUnreadCount(jid)
+    },
+    [selectedCommunity, selectChat, clearUnreadCount],
+  )
+
   const handleBack = useCallback(() => {
     selectChat(null)
-  }, [selectChat])
+    // Return to community home if we came from there.
+    if (communityReturn) {
+      setSelectedCommunity(communityReturn)
+      setCommunityReturn(null)
+    }
+  }, [selectChat, communityReturn])
 
   const transformChatElements = useCallback(
     async (chatElements: api.ChatElement[]): Promise<ChatItem[]> => {
@@ -252,6 +458,7 @@ export function ChatListScreen({ onOpenSettings }: ChatListScreenProps) {
           const isGroup = c.jid?.endsWith("@g.us") || false
           const avatar = c.avatar_url || ""
           const senderName = c.Sender ? await getContactName(c.Sender) : ""
+          const isCommunityGroup = Boolean(c.is_community_group && c.parent_jid)
 
           return {
             id: c.jid || "",
@@ -261,6 +468,10 @@ export function ChatListScreen({ onOpenSettings }: ChatListScreenProps) {
             timestamp: c.LatestTS,
             avatar: avatar,
             sender: senderName || "",
+            communityJid: c.parent_jid || undefined,
+            communityName: c.parent_name || undefined,
+            isCommunityGroup,
+            isCommunityParent: Boolean(c.is_community_parent),
           }
         }),
       )
@@ -270,26 +481,39 @@ export function ChatListScreen({ onOpenSettings }: ChatListScreenProps) {
 
   const loadAvatars = useCallback(
     async (chatItems: ChatItem[]) => {
-      const chatsNeedingAvatars = chatItems.filter(c => !c.avatar)
+      // Group avatars + community parent avatars for stacked logos.
+      const jobs: Array<{ chatId: string; jid: string; field: "avatar" | "communityAvatar" }> = []
+      for (const chat of chatItems) {
+        if (!chat.avatar) {
+          jobs.push({ chatId: chat.id, jid: chat.id, field: "avatar" })
+        }
+        if (chat.isCommunityGroup && chat.communityJid && !chat.communityAvatar) {
+          jobs.push({
+            chatId: chat.id,
+            jid: chat.communityJid,
+            field: "communityAvatar",
+          })
+        }
+      }
 
-      if (chatsNeedingAvatars.length === 0) return
+      if (jobs.length === 0) return
 
-      // Can change this later but
-      // 5 works well for now.
       const CONCURRENCY = 5
       let index = 0
 
       const worker = async () => {
-        while (index < chatsNeedingAvatars.length) {
-          const chat = chatsNeedingAvatars[index++]
+        while (index < jobs.length) {
+          const job = jobs[index++]
 
           try {
-            const avatarURL = await GetCachedAvatar(chat.id, false)
+            const avatarURL = await GetCachedAvatar(job.jid, false)
             if (avatarURL && mountedRef.current) {
-              useChatStore.getState().updateSingleChat(chat.id, { avatar: avatarURL })
+              useChatStore.getState().updateSingleChat(job.chatId, {
+                [job.field]: avatarURL,
+              })
             }
           } catch (err) {
-            console.error("Avatar load failed:", chat.id, err)
+            console.error("Avatar load failed:", job.jid, err)
           }
         }
       }
@@ -314,13 +538,10 @@ export function ChatListScreen({ onOpenSettings }: ChatListScreenProps) {
     }
   }, [setSelfAvatar])
 
-  const [view, setView] = useState<"chats" | "channels" | "status">("chats")
-  const [storyGroup, setStoryGroup] = useState<StatusGroup | null>(null)
-  const viewRef = useRef(view)
-  viewRef.current = view
-
   const fetchChats = useCallback(async () => {
     if (isFetchingRef.current) return
+    // Communities / status load their own data.
+    if (viewRef.current === "communities" || viewRef.current === "status") return
 
     isFetchingRef.current = true
 
@@ -347,9 +568,9 @@ export function ChatListScreen({ onOpenSettings }: ChatListScreenProps) {
     } finally {
       isFetchingRef.current = false
     }
-  }, [setChats, transformChatElements])
+  }, [setChats, transformChatElements, loadAvatars, loadSelfAvatar])
 
-  // Reload the list (and drop the open chat) when switching Chats/Channels.
+  // Reload the list (and drop the open chat) when switching sidebar tabs.
   const viewInitRef = useRef(true)
   useEffect(() => {
     if (viewInitRef.current) {
@@ -357,9 +578,11 @@ export function ChatListScreen({ onOpenSettings }: ChatListScreenProps) {
       return
     }
     selectChat(null)
+    setSelectedCommunity(null)
+    setCommunityReturn(null)
     setChats([])
-    // Status has its own data path (grouped stories); don't load it as a chat list.
-    if (view !== "status") fetchChats()
+    // Status / communities have their own data paths.
+    if (view === "chats" || view === "channels") fetchChats()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [view])
 
@@ -456,17 +679,17 @@ export function ChatListScreen({ onOpenSettings }: ChatListScreenProps) {
             "flex-col",
             "border-r border-gray-200 dark:border-dark-tertiary",
             "bg-white dark:bg-dark-bg h-full",
-            selectedChatId ? "hidden md:flex" : "flex",
+            selectedChatId || selectedCommunity ? "hidden md:flex" : "flex",
           )}
         >
           <Header onOpenSettings={onOpenSettings} avatar={selfAvatar} />
-          <div className="flex gap-2 px-3 pb-2 pt-1">
-            {(["chats", "channels", "status"] as const).map(v => (
+          <div className="flex gap-2 px-3 pb-2 pt-1 overflow-x-auto">
+            {(["chats", "communities", "channels", "status"] as const).map(v => (
               <button
                 key={v}
                 onClick={() => setView(v)}
                 className={clsx(
-                  "rounded-full border px-3 py-1 text-sm capitalize transition-colors",
+                  "rounded-full border px-3 py-1 text-sm capitalize transition-colors shrink-0",
                   view === v
                     ? "border-transparent bg-[#d9fdd3] font-medium text-[#0a1014] dark:bg-[#21c063]"
                     : "border-gray-300 text-gray-500 hover:bg-gray-100 dark:border-white/10 dark:text-[#8696a0] dark:hover:bg-white/5",
@@ -476,11 +699,29 @@ export function ChatListScreen({ onOpenSettings }: ChatListScreenProps) {
               </button>
             ))}
           </div>
-          <SearchBar value={searchTerm} onChange={setSearchTerm} />
+          {view !== "status" && (
+            <SearchBar
+              value={searchTerm}
+              onChange={setSearchTerm}
+              placeholder={
+                view === "communities"
+                  ? "Search communities"
+                  : view === "channels"
+                    ? "Search channels"
+                    : "Search or start new chat"
+              }
+            />
+          )}
 
           <div className="flex-1 overflow-y-auto">
             {view === "status" ? (
               <StatusList onOpen={setStoryGroup} />
+            ) : view === "communities" ? (
+              <CommunityList
+                searchTerm={searchTerm}
+                selectedJid={selectedCommunity?.jid ?? null}
+                onSelect={handleCommunitySelect}
+              />
             ) : filteredChatIds.length === 0 ? (
               <EmptyState
                 hasChats={totalChats > 0}
@@ -503,14 +744,17 @@ export function ChatListScreen({ onOpenSettings }: ChatListScreenProps) {
 
         <ResizableHandle />
 
-        {/* Chat Detail */}
+        {/* Chat Detail / Community home */}
         <ResizablePanel
           defaultSize="70%"
           minSize="400px"
           className={clsx(
             "flex-col h-full",
-            "bg-[#efeae2] dark:bg-[#0a0a0a] relative",
-            selectedChatId ? "flex" : "hidden md:flex",
+            selectedCommunity
+              ? "bg-light-secondary dark:bg-dark-bg"
+              : "bg-[#efeae2] dark:bg-[#0a0a0a]",
+            "relative",
+            selectedChatId || selectedCommunity ? "flex" : "hidden md:flex",
           )}
         >
           {selectedChatId ? (
@@ -520,6 +764,16 @@ export function ChatListScreen({ onOpenSettings }: ChatListScreenProps) {
               chatAvatar={selectedChatAvatar}
               onBack={handleBack}
             />
+          ) : selectedCommunity ? (
+            <CommunityHome
+              communityJid={selectedCommunity.jid}
+              communityName={selectedCommunity.name}
+              communityAvatar={selectedCommunity.avatar_url}
+              onBack={() => setSelectedCommunity(null)}
+              onOpenGroup={handleOpenGroupFromCommunity}
+            />
+          ) : view === "communities" ? (
+            <CommunitiesWelcome />
           ) : (
             <WelcomeScreen />
           )}

@@ -191,10 +191,16 @@ func (a *Api) GetCachedAvatar(jid string, recache bool) (string, error) {
 		return "", fmt.Errorf("invalid JID: %w", err)
 	}
 
-	// Get profile picture info
+	// Get profile picture info. Community parent groups need IsCommunity: true.
 	pic, err := a.waClient.GetProfilePictureInfo(a.ctx, jidParsed, &whatsmeow.GetProfilePictureParams{
 		Preview: false, // Get full resolution
 	})
+	if (err != nil || pic == nil) && jidParsed.Server == types.GroupServer {
+		pic, err = a.waClient.GetProfilePictureInfo(a.ctx, jidParsed, &whatsmeow.GetProfilePictureParams{
+			Preview:     true,
+			IsCommunity: true,
+		})
+	}
 	if err != nil || pic == nil {
 		if recache {
 			go a.imageCache.DeleteAvatar(jid)
@@ -202,8 +208,13 @@ func (a *Api) GetCachedAvatar(jid string, recache bool) (string, error) {
 		return "", nil // No avatar available
 	}
 
-	// Download the avatar using standard HTTP since profile picture URLs are public
-	resp, err := http.Get(pic.URL)
+	return a.downloadAvatarFromURL(jid, pic.URL)
+}
+
+// downloadAvatarFromURL fetches an avatar image from URL, caches it, and
+// returns a data URL. Used by both regular and community avatar paths.
+func (a *Api) downloadAvatarFromURL(jid, url string) (string, error) {
+	resp, err := http.Get(url)
 	if err != nil {
 		return "", fmt.Errorf("failed to download avatar: %w", err)
 	}
@@ -213,17 +224,14 @@ func (a *Api) GetCachedAvatar(jid string, recache bool) (string, error) {
 		return "", fmt.Errorf("failed to download avatar: status %d", resp.StatusCode)
 	}
 
-	// Read the image data
-	data, err = io.ReadAll(resp.Body)
+	data, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return "", fmt.Errorf("failed to read avatar data: %w", err)
 	}
 
-	// Determine MIME type from response header or image data
-	mime = resp.Header.Get("Content-Type")
+	mime := resp.Header.Get("Content-Type")
 	if mime == "" {
-		// Fallback to detection by file signature
-		mime = "image/jpeg" // Default fallback
+		mime = "image/jpeg"
 		if len(data) > 3 {
 			switch {
 			case data[0] == 0x89 && data[1] == 0x50 && data[2] == 0x4E && data[3] == 0x47:
@@ -236,17 +244,13 @@ func (a *Api) GetCachedAvatar(jid string, recache bool) (string, error) {
 		}
 	}
 
-	// Cache the avatar
 	_, err = a.imageCache.SaveAvatar(jid, data, mime)
 	if err != nil {
-		log.Printf("[GetCachedAvatar] Failed to cache avatar for %s: %v", jid, err)
+		log.Printf("[downloadAvatarFromURL] Failed to cache avatar for %s: %v", jid, err)
 		return "", fmt.Errorf("failed to cache avatar: %w", err)
 	}
 
-	// Return data URL like message images do
-	avatarDataURL := fmt.Sprintf("data:%s;base64,%s", mime, base64.StdEncoding.EncodeToString(data))
-
-	return avatarDataURL, nil
+	return fmt.Sprintf("data:%s;base64,%s", mime, base64.StdEncoding.EncodeToString(data)), nil
 }
 
 // GetSelfAvatar retrieves the avatar of the logged-in user

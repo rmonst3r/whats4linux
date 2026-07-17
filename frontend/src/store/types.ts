@@ -7,6 +7,14 @@ export interface ChatItem {
   avatar?: string
   unreadCount?: number
   sender?: string
+  /** Parent community JID when this chat is a community subgroup. */
+  communityJid?: string
+  /** Parent community display name (shown above the group name). */
+  communityName?: string
+  /** Parent community avatar for the stacked logo. */
+  communityAvatar?: string
+  isCommunityGroup?: boolean
+  isCommunityParent?: boolean
 }
 
 export interface Message {

@@ -1,5 +1,14 @@
 import { describe, it, expect } from "vitest"
-import { cn, formatPhone, phoneFromJID } from "./utils"
+import {
+  cn,
+  formatPhone,
+  phoneFromJID,
+  getProfileColor,
+  getAvatarColor,
+  PROFILE_COLORS,
+  AVATAR_COLORS_LIGHT,
+  AVATAR_COLORS_DARK,
+} from "./utils"
 
 describe("formatPhone", () => {
   it("formats a 12-digit number with country code split", () => {
@@ -63,5 +72,41 @@ describe("phoneFromJID", () => {
 describe("cn", () => {
   it("merges class values", () => {
     expect(cn("a", false && "b", "c")).toBe("a c")
+  })
+})
+
+// SHA-1(JID) → pastel palette index (WhatsApp-style default avatars).
+describe("getAvatarColor", () => {
+  it("returns a color from the light pastel palette", () => {
+    const c = getAvatarColor("120363@g.us", false)
+    expect(AVATAR_COLORS_LIGHT).toContain(c)
+  })
+
+  it("returns a color from the dark pastel palette", () => {
+    const c = getAvatarColor("120363@g.us", true)
+    expect(AVATAR_COLORS_DARK).toContain(c)
+  })
+
+  it("is stable for the same JID", () => {
+    expect(getAvatarColor("hello@g.us")).toBe(getAvatarColor("hello@g.us"))
+  })
+
+  it("picks different palette slots for light vs dark (same index)", () => {
+    const jid = "120363@g.us"
+    const light = getAvatarColor(jid, false)
+    const dark = getAvatarColor(jid, true)
+    const li = AVATAR_COLORS_LIGHT.indexOf(light as (typeof AVATAR_COLORS_LIGHT)[number])
+    const di = AVATAR_COLORS_DARK.indexOf(dark as (typeof AVATAR_COLORS_DARK)[number])
+    expect(li).toBe(di)
+    expect(light).not.toBe(dark)
+  })
+
+  it("falls back for empty JID", () => {
+    expect(getAvatarColor("")).toBe(AVATAR_COLORS_LIGHT[0])
+  })
+
+  it("getProfileColor aliases light palette", () => {
+    expect(getProfileColor("hello@g.us")).toBe(getAvatarColor("hello@g.us", false))
+    expect(PROFILE_COLORS).toBe(AVATAR_COLORS_LIGHT)
   })
 })
