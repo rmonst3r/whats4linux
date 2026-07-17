@@ -409,71 +409,71 @@ export function ChatInput({
             <EmojiIcon />
           </IconButton>
 
-        {/* Text Input */}
-        <div className="flex-1 bg-transparent rounded-full relative">
-          <div
-            ref={backdropRef}
-            className={clsx(
-              "absolute inset-0 w-full p-2 max-h-32 overflow-y-auto whitespace-pre-wrap break-words pointer-events-none",
-              "text-gray-900 dark:text-white",
-            )}
-            style={{ fontFamily: "inherit", fontSize: "inherit", lineHeight: "inherit" }}
-            aria-hidden="true"
-          >
-            {renderHighlightedText()}
-          </div>
-          <textarea
-            ref={textareaRef}
-            value={inputText}
-            onChange={handleInputChange}
-            onKeyDown={onKeyDown}
-            onPaste={onPaste}
-            onScroll={handleScroll}
-            placeholder="Message"
-            className={clsx(
-              "relative z-10 w-full p-2 bg-transparent resize-none outline-none max-h-32",
-              "text-transparent caret-green",
-              "placeholder:text-gray-500",
-            )}
-            rows={1}
-          />
-          {/* Mention Suggestions */}
-          {showSuggestions && (
+          {/* Text Input */}
+          <div className="flex-1 bg-transparent rounded-full relative">
             <div
-              ref={suggestionsRef}
-              className="absolute bottom-full left-0 right-0 bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded-lg shadow-lg z-50 max-h-40 overflow-y-auto"
+              ref={backdropRef}
+              className={clsx(
+                "absolute inset-0 w-full p-2 max-h-32 overflow-y-auto whitespace-pre-wrap break-words pointer-events-none",
+                "text-gray-900 dark:text-white",
+              )}
+              style={{ fontFamily: "inherit", fontSize: "inherit", lineHeight: "inherit" }}
+              aria-hidden="true"
             >
-              {mentionSuggestions.map(contact => {
-                const avatar = mentionAvatars[contact.phno]
-                const isLoading = loadingAvatars[contact.phno]
-                return (
-                  <div
-                    key={contact.phno}
-                    onClick={() => handleSuggestionClick(contact)}
-                    className="p-2 hover:bg-gray-100 dark:hover:bg-gray-700 cursor-pointer flex items-center gap-2"
-                  >
-                    <div className="w-8 h-8 rounded-full bg-gray-300 dark:bg-gray-600 overflow-hidden flex items-center justify-center shrink-0">
-                      {isLoading ? (
-                        <div className="w-4 h-4 border-2 border-gray-400 border-t-transparent rounded-full animate-spin" />
-                      ) : avatar ? (
-                        <img
-                          src={avatar}
-                          alt={contact.full_name || contact.push_name || contact.short}
-                          className="w-full h-full object-cover"
-                        />
-                      ) : (
-                        <UserAvatar />
-                      )}
-                    </div>
-                    <span>
-                      {contact.full_name || contact.push_name || contact.short || contact.phno}
-                    </span>
-                  </div>
-                )
-              })}
+              {renderHighlightedText()}
             </div>
-          )}
-        </div>
+            <textarea
+              ref={textareaRef}
+              value={inputText}
+              onChange={handleInputChange}
+              onKeyDown={onKeyDown}
+              onPaste={onPaste}
+              onScroll={handleScroll}
+              placeholder="Message"
+              className={clsx(
+                "relative z-10 w-full p-2 bg-transparent resize-none outline-none max-h-32",
+                "text-transparent caret-green",
+                "placeholder:text-gray-500",
+              )}
+              rows={1}
+            />
+            {/* Mention Suggestions */}
+            {showSuggestions && (
+              <div
+                ref={suggestionsRef}
+                className="absolute bottom-full left-0 right-0 bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded-lg shadow-lg z-50 max-h-40 overflow-y-auto"
+              >
+                {mentionSuggestions.map(contact => {
+                  const avatar = mentionAvatars[contact.phno]
+                  const isLoading = loadingAvatars[contact.phno]
+                  return (
+                    <div
+                      key={contact.phno}
+                      onClick={() => handleSuggestionClick(contact)}
+                      className="p-2 hover:bg-gray-100 dark:hover:bg-gray-700 cursor-pointer flex items-center gap-2"
+                    >
+                      <div className="w-8 h-8 rounded-full bg-gray-300 dark:bg-gray-600 overflow-hidden flex items-center justify-center shrink-0">
+                        {isLoading ? (
+                          <div className="w-4 h-4 border-2 border-gray-400 border-t-transparent rounded-full animate-spin" />
+                        ) : avatar ? (
+                          <img
+                            src={avatar}
+                            alt={contact.full_name || contact.push_name || contact.short}
+                            className="w-full h-full object-cover"
+                          />
+                        ) : (
+                          <UserAvatar />
+                        )}
+                      </div>
+                      <span>
+                        {contact.full_name || contact.push_name || contact.short || contact.phno}
+                      </span>
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+          </div>
 
           {/* Attach Button */}
           <IconButton onClick={() => fileInputRef.current?.click()} title="Attach file">

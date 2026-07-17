@@ -120,10 +120,7 @@ export function ChatDetail({ chatId, chatName, chatAvatar, onBack }: ChatDetailP
     return unsub
   }, [chatId, loadPinned])
 
-  const pinnedIds = useMemo(
-    () => new Set(pinnedMessages.map(p => p.message_id)),
-    [pinnedMessages],
-  )
+  const pinnedIds = useMemo(() => new Set(pinnedMessages.map(p => p.message_id)), [pinnedMessages])
 
   useEffect(() => {
     setChatSubtitle("")

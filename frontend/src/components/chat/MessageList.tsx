@@ -119,9 +119,7 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
         // are separated by a larger gap than messages within a run.
         const prev = messages[_index - firstItemIndex - 1]
         const firstInGroup =
-          !prev ||
-          prev.Info.IsFromMe !== msg.Info.IsFromMe ||
-          prev.Info.Sender !== msg.Info.Sender
+          !prev || prev.Info.IsFromMe !== msg.Info.IsFromMe || prev.Info.Sender !== msg.Info.Sender
         // No overflow-hidden on the row: hiding one axis forces the other to
         // 'auto', which clips the reaction pills that hang below bubbles.
         // Horizontal overflow is already contained at the panel level.

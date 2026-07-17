@@ -167,8 +167,8 @@ export function MessageItem({
   const isPinned = pinnedIds?.has(message.Info.ID) ?? false
 
   const handlePin = () => {
-    SetMessagePinned(chatId, message.Info.Sender, message.Info.ID, isFromMe, !isPinned).catch(
-      err => console.error("Failed to toggle message pin:", err),
+    SetMessagePinned(chatId, message.Info.Sender, message.Info.ID, isFromMe, !isPinned).catch(err =>
+      console.error("Failed to toggle message pin:", err),
     )
   }
 
@@ -470,10 +470,7 @@ export function MessageItem({
 
           {!isFromMe && chatId.endsWith("@g.us") && firstInGroup && (
             <div className="flex items-baseline justify-between gap-4 mb-0.5 pt-0.5">
-              <span
-                className="text-[11px] font-semibold truncate"
-                style={{ color: senderColor }}
-              >
+              <span className="text-[11px] font-semibold truncate" style={{ color: senderColor }}>
                 {senderName}
               </span>
               {/* WhatsApp shows the phone number next to the name for senders

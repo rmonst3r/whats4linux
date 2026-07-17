@@ -23,11 +23,7 @@ describe("sortChatItems", () => {
   })
 
   it("orders within the pinned block by recency", () => {
-    const out = sortChatItems([
-      chat("p1", 5, true),
-      chat("x", 50),
-      chat("p2", 9, true),
-    ])
+    const out = sortChatItems([chat("p1", 5, true), chat("x", 50), chat("p2", 9, true)])
     expect(out.map(c => c.id)).toEqual(["p2", "p1", "x"])
   })
 

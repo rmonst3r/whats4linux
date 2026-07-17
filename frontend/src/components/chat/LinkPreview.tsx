@@ -18,9 +18,7 @@ const posterCache = new Map<string, string>()
 
 // Renders the WhatsApp link-preview card under a message, if one was stored.
 export function LinkPreview({ messageId }: { messageId: string }) {
-  const [preview, setPreview] = useState<Preview | null>(
-    () => previewCache.get(messageId) ?? null,
-  )
+  const [preview, setPreview] = useState<Preview | null>(() => previewCache.get(messageId) ?? null)
   const [poster, setPoster] = useState<string>(() => posterCache.get(messageId) ?? "")
 
   useEffect(() => {
