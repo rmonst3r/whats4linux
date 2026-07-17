@@ -2,7 +2,10 @@ package api
 
 import (
 	"log"
+	"time"
 
+	"github.com/wailsapp/wails/v2/pkg/runtime"
+	"go.mau.fi/whatsmeow/appstate"
 	"go.mau.fi/whatsmeow/types"
 )
 
@@ -10,11 +13,31 @@ type ChatElement struct {
 	LatestMessage string `json:"latest_message"`
 	LatestTS      int64
 	Sender        string
+	Pinned        bool  `json:"pinned"`
+	PinnedAt      int64 `json:"pinned_at"`
 	Contact
+}
+
+// ToggleChatPin pins/unpins a chat: syncs the change to other devices via
+// app state and records it locally for the chat list.
+func (a *Api) ToggleChatPin(jidStr string, pinned bool) error {
+	jid, err := types.ParseJID(jidStr)
+	if err != nil {
+		return err
+	}
+	if err := a.waClient.SendAppState(a.ctx, appstate.BuildPin(jid, pinned)); err != nil {
+		return err
+	}
+	if err := a.messageStore.SetChatPinned(jidStr, pinned, time.Now().Unix()); err != nil {
+		log.Println("ToggleChatPin: failed to persist:", err)
+	}
+	runtime.EventsEmit(a.ctx, "wa:chat_list_refresh")
+	return nil
 }
 
 func (a *Api) GetChatList() ([]ChatElement, error) {
 	cmList := a.messageStore.GetChatList()
+	pinnedChats := a.messageStore.GetPinnedChats()
 	ce := make([]ChatElement, len(cmList))
 	for i, cm := range cmList {
 		var fc Contact
@@ -56,10 +79,13 @@ func (a *Api) GetChatList() ([]ChatElement, error) {
 				}
 			}
 		}
+		pinnedAt, pinned := pinnedChats[cm.JID.String()]
 		ce[i] = ChatElement{
 			LatestMessage: cm.MessageText,
 			LatestTS:      cm.MessageTime,
 			Sender:        cm.Sender,
+			Pinned:        pinned,
+			PinnedAt:      pinnedAt,
 			Contact:       fc,
 		}
 	}

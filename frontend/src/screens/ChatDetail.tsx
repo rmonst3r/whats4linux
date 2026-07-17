@@ -1,7 +1,8 @@
-import { useEffect, useState, useRef, useCallback } from "react"
+import { useEffect, useState, useRef, useCallback, useMemo } from "react"
 import {
   SendMessage,
   FetchMessagesPaged,
+  GetPinnedMessages,
   SendChatPresence,
   GetGroupInfo,
   GetProfile,
@@ -96,6 +97,33 @@ export function ChatDetail({ chatId, chatName, chatAvatar, onBack }: ChatDetailP
   const currentChat = chatsById.get(chatId)
   const chatType = currentChat?.type || "contact"
   const [chatSubtitle, setChatSubtitle] = useState("")
+  const [pinnedMessages, setPinnedMessages] = useState<store.PinnedMessage[]>([])
+  // Which pinned message the banner jumps to next (cycles like WhatsApp).
+  const pinnedCycleRef = useRef(0)
+
+  const loadPinned = useCallback(async () => {
+    try {
+      const pins = await GetPinnedMessages(chatId)
+      setPinnedMessages(pins || [])
+    } catch (err) {
+      console.error("Failed to load pinned messages:", err)
+      setPinnedMessages([])
+    }
+  }, [chatId])
+
+  useEffect(() => {
+    pinnedCycleRef.current = 0
+    loadPinned()
+    const unsub = EventsOn("wa:pinned_update", (data: { chatId: string }) => {
+      if (data?.chatId === chatId) loadPinned()
+    })
+    return unsub
+  }, [chatId, loadPinned])
+
+  const pinnedIds = useMemo(
+    () => new Set(pinnedMessages.map(p => p.message_id)),
+    [pinnedMessages],
+  )
 
   useEffect(() => {
     setChatSubtitle("")
@@ -492,6 +520,40 @@ export function ChatDetail({ chatId, chatName, chatAvatar, onBack }: ChatDetailP
           onInfoClick={() => setChatInfoOpen(!chatInfoOpen)}
         />
 
+        {/* Pinned-messages banner: shows the latest pin, click cycles through
+            pins newest-first and jumps to each message (WhatsApp behavior). */}
+        {pinnedMessages.length > 0 && (
+          <div
+            onClick={() => {
+              const idx = pinnedCycleRef.current % pinnedMessages.length
+              const target = pinnedMessages[pinnedMessages.length - 1 - idx]
+              pinnedCycleRef.current = idx + 1
+              handleQuotedClick(target.message_id)
+            }}
+            className="flex items-center gap-2 border-b border-gray-200 bg-light-secondary px-4 py-2 text-sm cursor-pointer dark:border-white/5 dark:bg-dark-bg"
+          >
+            <svg
+              viewBox="0 0 24 24"
+              width="16"
+              height="16"
+              className="shrink-0 fill-current text-[#1b9a58] dark:text-[#21c063]"
+            >
+              <path d="M16 3a1 1 0 0 1 .95 1.31l-.9 2.72 3.42 3.42a1 1 0 0 1-.21 1.57l-3.62 2.07-1.9 4.75a1 1 0 0 1-1.64.33L9 16.07l-4.29 4.3-1.42-1.42 4.3-4.29-3.1-3.1a1 1 0 0 1 .33-1.64l4.75-1.9 2.07-3.62A1 1 0 0 1 12.5 4z" />
+            </svg>
+            <span
+              className="flex-1 truncate text-gray-700 dark:text-gray-200 [&_*]:inline"
+              dangerouslySetInnerHTML={{
+                __html: pinnedMessages[pinnedMessages.length - 1].text || "Pinned message",
+              }}
+            />
+            {pinnedMessages.length > 1 && (
+              <span className="shrink-0 text-xs text-gray-500 dark:text-[#8696a0]">
+                {pinnedMessages.length}
+              </span>
+            )}
+          </div>
+        )}
+
         <div className="flex-1 relative overflow-hidden">
           {/* Static chat wallpaper: painted once behind the list instead of
               scrolling (and repainting) with it — big scroll-perf win. */}
@@ -529,6 +591,7 @@ export function ChatDetail({ chatId, chatName, chatAvatar, onBack }: ChatDetailP
               onQuotedClick={handleQuotedClick}
               onLoadMore={loadMoreMessages}
               onAtBottomChange={handleAtBottomChange}
+              pinnedIds={pinnedIds}
               isLoading={isLoadingMore}
               hasMore={hasMore}
               highlightedMessageId={highlightedMessageId}

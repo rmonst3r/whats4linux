@@ -7,6 +7,7 @@ export interface ChatItem {
   avatar?: string
   unreadCount?: number
   sender?: string
+  pinned?: boolean
 }
 
 export interface Message {

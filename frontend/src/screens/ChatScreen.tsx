@@ -5,6 +5,7 @@ import {
   GetChannelList,
   GetCachedAvatar,
   GetSelfAvatar,
+  ToggleChatPin,
 } from "../../wailsjs/go/api/Api"
 import { api } from "../../wailsjs/go/models"
 import { EventsOn } from "../../wailsjs/runtime/runtime"
@@ -88,16 +89,26 @@ const MemoizedChatAvatar = memo(
 
 MemoizedChatAvatar.displayName = "MemoizedChatAvatar"
 
+// Small WhatsApp-style pin glyph shown on pinned chat rows.
+const PinIcon = ({ className }: { className?: string }) => (
+  <svg viewBox="0 0 24 24" width="14" height="14" className={clsx("fill-current", className)}>
+    <path d="M16 3a1 1 0 0 1 .95 1.31l-.9 2.72 3.42 3.42a1 1 0 0 1-.21 1.57l-3.62 2.07-1.9 4.75a1 1 0 0 1-1.64.33L9 16.07l-4.29 4.3-1.42-1.42 4.3-4.29-3.1-3.1a1 1 0 0 1 .33-1.64l4.75-1.9 2.07-3.62A1 1 0 0 1 12.5 4z" />
+  </svg>
+)
+
 interface ChatListItemContentProps {
   chat: ChatItem
   isSelected: boolean
   onSelect: (chat: ChatItem) => void
+  onContextMenu: (e: React.MouseEvent, chat: ChatItem) => void
 }
 
 // Pure presentational component - memoized to prevent unnecessary re-renders
-const ChatListItemContent = memo(({ chat, isSelected, onSelect }: ChatListItemContentProps) => (
+const ChatListItemContent = memo(
+  ({ chat, isSelected, onSelect, onContextMenu }: ChatListItemContentProps) => (
   <div
     onClick={() => onSelect(chat)}
+    onContextMenu={e => onContextMenu(e, chat)}
     className={clsx(
       "flex items-center px-4 py-3 cursor-pointer",
       "hover:bg-gray-100 dark:hover:bg-[#202121]",
@@ -134,6 +145,7 @@ const ChatListItemContent = memo(({ chat, isSelected, onSelect }: ChatListItemCo
             dangerouslySetInnerHTML={{ __html: chat.subtitle }}
           />
         </div>
+        {chat.pinned && <PinIcon className="shrink-0 text-gray-400 dark:text-[#8696a0]" />}
         {chat.unreadCount ? (
           <span className="shrink-0 min-w-5 h-5 px-1.5 flex items-center justify-center rounded-full bg-[#21c063] text-[#0a1014] text-xs font-semibold">
             {chat.unreadCount > 99 ? "99+" : chat.unreadCount}
@@ -142,7 +154,8 @@ const ChatListItemContent = memo(({ chat, isSelected, onSelect }: ChatListItemCo
       </div>
     </div>
   </div>
-))
+  ),
+)
 
 ChatListItemContent.displayName = "ChatListItemContent"
 
@@ -150,16 +163,24 @@ interface ChatListItemProps {
   chatId: string
   isSelected: boolean
   onSelect: (chat: ChatItem) => void
+  onContextMenu: (e: React.MouseEvent, chat: ChatItem) => void
 }
 
 // Container component that subscribes to specific chat data
-const ChatListItem = memo(({ chatId, isSelected, onSelect }: ChatListItemProps) => {
+const ChatListItem = memo(({ chatId, isSelected, onSelect, onContextMenu }: ChatListItemProps) => {
   // This hook only triggers re-render when THIS specific chat changes
   const chat = useChatById(chatId)
 
   if (!chat) return null
 
-  return <ChatListItemContent chat={chat} isSelected={isSelected} onSelect={onSelect} />
+  return (
+    <ChatListItemContent
+      chat={chat}
+      isSelected={isSelected}
+      onSelect={onSelect}
+      onContextMenu={onContextMenu}
+    />
+  )
 })
 
 ChatListItem.displayName = "ChatListItem"
@@ -258,6 +279,7 @@ export function ChatListScreen({ onOpenSettings }: ChatListScreenProps) {
             timestamp: c.LatestTS,
             avatar: avatar,
             sender: senderName || "",
+            pinned: c.pinned || false,
           }
         }),
       )
@@ -312,6 +334,37 @@ export function ChatListScreen({ onOpenSettings }: ChatListScreenProps) {
   }, [setSelfAvatar])
 
   const [view, setView] = useState<"chats" | "channels" | "status">("chats")
+  const [chatMenu, setChatMenu] = useState<{ x: number; y: number; chat: ChatItem } | null>(null)
+
+  const handleChatContextMenu = useCallback((e: React.MouseEvent, chat: ChatItem) => {
+    e.preventDefault()
+    setChatMenu({ x: e.clientX, y: e.clientY, chat })
+  }, [])
+
+  // Dismiss the chat context menu on any click outside it.
+  useEffect(() => {
+    if (!chatMenu) return
+    const close = () => setChatMenu(null)
+    document.addEventListener("click", close)
+    return () => document.removeEventListener("click", close)
+  }, [chatMenu])
+
+  const handleTogglePin = useCallback(async () => {
+    if (!chatMenu) return
+    const { chat } = chatMenu
+    setChatMenu(null)
+    const store = useChatStore.getState()
+    // Optimistic: flip locally and re-sort; backend refresh confirms.
+    store.updateSingleChat(chat.id, { pinned: !chat.pinned })
+    store.resortChats()
+    try {
+      await ToggleChatPin(chat.id, !chat.pinned)
+    } catch (err) {
+      console.error("Failed to toggle chat pin:", err)
+      store.updateSingleChat(chat.id, { pinned: chat.pinned })
+      store.resortChats()
+    }
+  }, [chatMenu])
   const [storyGroup, setStoryGroup] = useState<StatusGroup | null>(null)
   const viewRef = useRef(view)
   viewRef.current = view
@@ -443,6 +496,19 @@ export function ChatListScreen({ onOpenSettings }: ChatListScreenProps) {
 
   return (
     <div className="flex h-screen bg-light-secondary dark:bg-black overflow-hidden">
+      {chatMenu && (
+        <div
+          className="fixed z-50 min-w-36 rounded-lg border border-gray-200 bg-white py-1 shadow-lg dark:border-white/10 dark:bg-[#242626]"
+          style={{ top: chatMenu.y, left: chatMenu.x }}
+        >
+          <button
+            onClick={handleTogglePin}
+            className="w-full px-4 py-2 text-left text-sm text-gray-800 hover:bg-gray-100 dark:text-gray-100 dark:hover:bg-white/5"
+          >
+            {chatMenu.chat.pinned ? "Unpin chat" : "Pin chat"}
+          </button>
+        </div>
+      )}
       <ResizablePanelGroup className="h-full">
         {/* Chat List Sidebar */}
         <ResizablePanel
@@ -491,6 +557,7 @@ export function ChatListScreen({ onOpenSettings }: ChatListScreenProps) {
                   chatId={chatId}
                   isSelected={selectedChatId === chatId}
                   onSelect={handleChatSelect}
+                  onContextMenu={handleChatContextMenu}
                 />
               ))
             )}

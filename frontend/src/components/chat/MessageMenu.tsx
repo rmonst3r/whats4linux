@@ -16,26 +16,37 @@ import {
 interface MessageMenuProps {
   messageId: string
   isFromMe: boolean
+  isPinned?: boolean
   onReply?: () => void
   onReplyPrivately?: () => void
   onMessage?: () => void
   onCopy?: () => void
   onReact?: () => void
   onForward?: () => void
+  onPin?: () => void
   onStar?: () => void
   onReport?: () => void
   onDelete?: () => void
 }
 
+// Same pin glyph as the chat list, sized for menu rows.
+const PinMenuIcon = () => (
+  <svg viewBox="0 0 24 24" width="18" height="18" className="fill-current">
+    <path d="M16 3a1 1 0 0 1 .95 1.31l-.9 2.72 3.42 3.42a1 1 0 0 1-.21 1.57l-3.62 2.07-1.9 4.75a1 1 0 0 1-1.64.33L9 16.07l-4.29 4.3-1.42-1.42 4.3-4.29-3.1-3.1a1 1 0 0 1 .33-1.64l4.75-1.9 2.07-3.62A1 1 0 0 1 12.5 4z" />
+  </svg>
+)
+
 export function MessageMenu({
   messageId,
   isFromMe,
+  isPinned,
   onReply,
   onReplyPrivately,
   onMessage,
   onCopy,
   onReact,
   onForward,
+  onPin,
   onStar,
   onReport,
   onDelete,
@@ -199,6 +210,16 @@ export function MessageMenu({
               <ForwardIcon />
               <span>Forward</span>
             </button>
+
+            {onPin && (
+              <button
+                onClick={() => handleMenuItemClick(onPin)}
+                className="rounded-xl w-full px-4 py-2.5 text-left flex items-center gap-3 hover:bg-gray-100 dark:hover:bg-dark-tertiary transition-colors text-gray-800 dark:text-gray-200 text-sm"
+              >
+                <PinMenuIcon />
+                <span>{isPinned ? "Unpin" : "Pin"}</span>
+              </button>
+            )}
 
             <button
               onClick={() => handleMenuItemClick(onStar)}

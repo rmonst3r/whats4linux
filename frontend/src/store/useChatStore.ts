@@ -2,6 +2,7 @@ import { create } from "zustand"
 import { useShallow } from "zustand/react/shallow"
 import { useCallback } from "react"
 import type { ChatItem } from "./types"
+import { sortChatItems } from "../lib/chatSort"
 
 interface ChatStore {
   // Use a Map for O(1) lookups and granular updates
@@ -24,6 +25,7 @@ interface ChatStore {
     sender?: string,
   ) => void
   updateSingleChat: (chatId: string, updates: Partial<ChatItem>) => void
+  resortChats: () => void
   incrementUnreadCount: (chatId: string) => void
   clearUnreadCount: (chatId: string) => void
   getChat: (chatId: string) => ChatItem | undefined
@@ -41,7 +43,6 @@ export const useChatStore = create<ChatStore>((set, get) => ({
   setChats: chats =>
     set(state => {
       const newChatsById = new Map<string, ChatItem>()
-      const newChatIds: string[] = []
 
       for (const chat of chats) {
         // Preserve unread counts across a full refetch; the rebuilt items from
@@ -51,9 +52,9 @@ export const useChatStore = create<ChatStore>((set, get) => ({
           chat.id,
           prev?.unreadCount ? { ...chat, unreadCount: prev.unreadCount } : chat,
         )
-        newChatIds.push(chat.id)
       }
 
+      const newChatIds = sortChatItems([...newChatsById.values()]).map(c => c.id)
       return { chatsById: newChatsById, chatIds: newChatIds }
     }),
 
@@ -66,6 +67,13 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     }),
 
   setSearchTerm: term => set({ searchTerm: term }),
+
+  // Recompute display order (pinned first, then recency) after an in-place
+  // update like an optimistic pin toggle.
+  resortChats: () =>
+    set(state => ({
+      chatIds: sortChatItems([...state.chatsById.values()]).map(c => c.id),
+    })),
 
   // Update only a single chat without replacing the entire Map
   updateSingleChat: (chatId, updates) =>
@@ -92,8 +100,9 @@ export const useChatStore = create<ChatStore>((set, get) => ({
         sender: sender !== undefined ? sender : existingChat.sender,
       })
 
-      // Move this chat to the top of the list
-      const newChatIds = [chatId, ...state.chatIds.filter(id => id !== chatId)]
+      // Re-sort: keeps pinned chats above even when another chat gets a
+      // new message.
+      const newChatIds = sortChatItems([...newChatsById.values()]).map(c => c.id)
 
       return { chatsById: newChatsById, chatIds: newChatIds }
     }),

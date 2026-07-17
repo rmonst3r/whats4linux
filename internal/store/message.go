@@ -156,6 +156,10 @@ func NewMessageStore() (*MessageStore, error) {
 		if err != nil {
 			return err
 		}
+		_, err = tx.Exec(query.CreatePinnedChatsTable)
+		if err != nil {
+			return err
+		}
 		_, err = tx.Exec(query.CreateReactionsTable)
 		if err != nil {
 			return err
@@ -1506,4 +1510,75 @@ func (ms *MessageStore) GetDecodedChatList() ([]DecodedMessage, error) {
 	}
 
 	return messages, nil
+}
+
+// ---- Pins ----
+
+// PinnedMessage is a pinned message row joined with its stored text, used by
+// the pinned-messages banner in a chat.
+type PinnedMessage struct {
+	MessageID string `json:"message_id"`
+	SenderJID string `json:"sender_jid"`
+	PinnedAt  int64  `json:"pinned_at"`
+	Text      string `json:"text"`
+}
+
+// GetPinnedMessages returns the non-expired pinned messages of a chat in pin
+// order (oldest first).
+func (ms *MessageStore) GetPinnedMessages(chatJID string) ([]PinnedMessage, error) {
+	rows, err := ms.db.Query(query.GetChatPinnedMessagesWithText, chatJID, time.Now().Unix())
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var pins []PinnedMessage
+	for rows.Next() {
+		var p PinnedMessage
+		if err := rows.Scan(&p.MessageID, &p.SenderJID, &p.PinnedAt, &p.Text); err != nil {
+			return nil, err
+		}
+		pins = append(pins, p)
+	}
+	return pins, rows.Err()
+}
+
+// ApplyMessagePin records a locally-sent pin/unpin so the UI reflects it
+// immediately (incoming pin events are handled by ProcessMessageEvent).
+func (ms *MessageStore) ApplyMessagePin(chatJID, senderJID, messageID string, pin bool, expiry int64) error {
+	if pin {
+		_, err := ms.db.Exec(query.InsertPinnedMessages,
+			messageID, chatJID, senderJID, time.Now().Unix(), expiry)
+		return err
+	}
+	_, err := ms.db.Exec(query.DeletePinnedMessageByMessageId, messageID)
+	return err
+}
+
+// SetChatPinned stores whether a chat is pinned in the chat list.
+func (ms *MessageStore) SetChatPinned(chatJID string, pinned bool, ts int64) error {
+	if pinned {
+		_, err := ms.db.Exec(query.UpsertPinnedChat, chatJID, ts)
+		return err
+	}
+	_, err := ms.db.Exec(query.DeletePinnedChat, chatJID)
+	return err
+}
+
+// GetPinnedChats returns chat JID -> pinned-at for every pinned chat.
+func (ms *MessageStore) GetPinnedChats() map[string]int64 {
+	pins := make(map[string]int64)
+	rows, err := ms.db.Query(query.SelectPinnedChats)
+	if err != nil {
+		return pins
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var jid string
+		var ts int64
+		if rows.Scan(&jid, &ts) == nil {
+			pins[jid] = ts
+		}
+	}
+	return pins
 }

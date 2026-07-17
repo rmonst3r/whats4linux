@@ -11,6 +11,7 @@ import (
 	mtypes "github.com/lugvitc/whats4linux/internal/types"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 	"go.mau.fi/whatsmeow"
+	"go.mau.fi/whatsmeow/proto/waCommon"
 	"go.mau.fi/whatsmeow/proto/waE2E"
 	"go.mau.fi/whatsmeow/types"
 	"go.mau.fi/whatsmeow/types/events"
@@ -533,5 +534,60 @@ func (a *Api) MarkRead(chatJID string, messageIDs []string, Type string) error {
 			}
 		}
 	}
+	return nil
+}
+
+// ---- Message pins ----
+
+// PinExpirySeconds mirrors WhatsApp's default pin duration (7 days).
+const PinExpirySeconds = 7 * 24 * 60 * 60
+
+func (a *Api) GetPinnedMessages(chatJID string) ([]store.PinnedMessage, error) {
+	return a.messageStore.GetPinnedMessages(chatJID)
+}
+
+// SetMessagePinned pins or unpins a message for everyone in the chat and
+// records the change locally.
+func (a *Api) SetMessagePinned(chatJID, senderJID, messageID string, fromMe, pin bool) error {
+	if a.waClient.Store.ID == nil {
+		return fmt.Errorf("not logged in")
+	}
+	chat, err := types.ParseJID(chatJID)
+	if err != nil {
+		return err
+	}
+
+	key := &waCommon.MessageKey{
+		RemoteJID: proto.String(chatJID),
+		FromMe:    proto.Bool(fromMe),
+		ID:        proto.String(messageID),
+	}
+	if chat.Server == types.GroupServer && !fromMe && senderJID != "" {
+		key.Participant = proto.String(senderJID)
+	}
+
+	pinType := waE2E.PinInChatMessage_PIN_FOR_ALL
+	if !pin {
+		pinType = waE2E.PinInChatMessage_UNPIN_FOR_ALL
+	}
+	msg := &waE2E.Message{
+		PinInChatMessage: &waE2E.PinInChatMessage{
+			Key:               key,
+			Type:              &pinType,
+			SenderTimestampMS: proto.Int64(time.Now().UnixMilli()),
+		},
+		MessageContextInfo: &waE2E.MessageContextInfo{
+			MessageAddOnDurationInSecs: proto.Uint32(uint32(PinExpirySeconds)),
+		},
+	}
+	if _, err := a.waClient.SendMessage(a.ctx, chat, msg); err != nil {
+		return err
+	}
+
+	sender := a.waClient.Store.ID.String()
+	if err := a.messageStore.ApplyMessagePin(chatJID, sender, messageID, pin, PinExpirySeconds); err != nil {
+		log.Println("SetMessagePinned: failed to persist:", err)
+	}
+	runtime.EventsEmit(a.ctx, "wa:pinned_update", map[string]any{"chatId": chatJID})
 	return nil
 }

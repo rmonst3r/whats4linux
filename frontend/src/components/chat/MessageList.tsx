@@ -14,6 +14,7 @@ interface MessageListProps {
   onQuotedClick?: (messageId: string) => void
   onLoadMore?: () => void
   onAtBottomChange?: (atBottom: boolean) => void
+  pinnedIds?: Set<string>
   isLoading?: boolean
   hasMore?: boolean
   highlightedMessageId?: string | null
@@ -64,6 +65,7 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
     onQuotedClick,
     onLoadMore,
     onAtBottomChange,
+    pinnedIds,
     isLoading,
     hasMore,
     highlightedMessageId,
@@ -129,6 +131,7 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
               message={msg}
               chatId={chatId}
               firstInGroup={firstInGroup}
+              pinnedIds={pinnedIds}
               sentMediaCache={sentMediaCache}
               onReply={onReply}
               onQuotedClick={onQuotedClick}

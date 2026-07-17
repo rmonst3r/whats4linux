@@ -1,7 +1,12 @@
 import React, { useState, useEffect, useMemo, lazy, Suspense } from "react"
 import emojiData from "@emoji-mart/data"
 import { store } from "../../../wailsjs/go/models"
-import { DownloadImageToFile, GetCachedAvatar, SendReaction } from "../../../wailsjs/go/api/Api"
+import {
+  DownloadImageToFile,
+  GetCachedAvatar,
+  SendReaction,
+  SetMessagePinned,
+} from "../../../wailsjs/go/api/Api"
 import { MediaContent } from "./MediaContent"
 import { QuotedMessage } from "./QuotedMessage"
 import { ReactionBubble } from "./Reactions"
@@ -26,6 +31,7 @@ interface MessageItemProps {
   message: store.DecodedMessage
   chatId: string
   firstInGroup?: boolean
+  pinnedIds?: Set<string>
   sentMediaCache: React.MutableRefObject<Map<string, string>>
   onReply?: (message: store.DecodedMessage) => void
   onQuotedClick?: (messageId: string) => void
@@ -76,6 +82,7 @@ export function MessageItem({
   message,
   chatId,
   firstInGroup = true,
+  pinnedIds,
   sentMediaCache,
   onReply,
   onQuotedClick,
@@ -155,6 +162,14 @@ export function MessageItem({
 
   const handleForward = () => {
     // TODO: Implement forward functionality
+  }
+
+  const isPinned = pinnedIds?.has(message.Info.ID) ?? false
+
+  const handlePin = () => {
+    SetMessagePinned(chatId, message.Info.Sender, message.Info.ID, isFromMe, !isPinned).catch(
+      err => console.error("Failed to toggle message pin:", err),
+    )
   }
 
   const handleStar = () => {
@@ -440,6 +455,8 @@ export function MessageItem({
           <MessageMenu
             messageId={message.Info.ID}
             isFromMe={isFromMe}
+            isPinned={isPinned}
+            onPin={handlePin}
             onReply={handleReply}
             onReplyPrivately={!isFromMe ? handleReplyPrivately : undefined}
             onMessage={!isFromMe ? handleMessage : undefined}
