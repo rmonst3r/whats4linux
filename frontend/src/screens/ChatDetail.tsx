@@ -31,6 +31,15 @@ const PAGE_SIZE = 50
 // messages are prepended, keeping the scroll position anchored.
 const START_INDEX = 1_000_000
 
+function blobToDataURL(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(reader.result as string)
+    reader.onerror = () => reject(reader.error)
+    reader.readAsDataURL(blob)
+  })
+}
+
 export function ChatDetail({ chatId, chatName, chatAvatar, onBack }: ChatDetailProps) {
   const {
     messages,
@@ -531,16 +540,34 @@ export function ChatDetail({ chatId, chatName, chatAvatar, onBack }: ChatDetailP
             e.key === "Enter" && !e.shiftKey && (e.preventDefault(), handleSendMessage())
           }
           onPaste={async e => {
+            // Chromium exposes pasted images synchronously via DataTransfer.
             const items = e.clipboardData?.items
             for (const item of items || []) {
               if (item.type.indexOf("image") !== -1) {
                 const file = item.getAsFile()
                 if (file) {
-                  const reader = new FileReader()
-                  reader.onload = event => setPastedImage(event.target?.result as string)
-                  reader.readAsDataURL(file)
+                  e.preventDefault()
+                  setPastedImage(await blobToDataURL(file))
+                  return
                 }
               }
+            }
+
+            // WebKitGTK (Wails on Linux) does not put system-clipboard images
+            // into DataTransfer, so fall back to the async Clipboard API.
+            if (!navigator.clipboard?.read) return
+            try {
+              const clipboardItems = await navigator.clipboard.read()
+              for (const clipboardItem of clipboardItems) {
+                const imageType = clipboardItem.types.find(t => t.startsWith("image/"))
+                if (imageType) {
+                  const blob = await clipboardItem.getType(imageType)
+                  setPastedImage(await blobToDataURL(blob))
+                  return
+                }
+              }
+            } catch (err) {
+              console.error("Clipboard image read failed:", err)
             }
           }}
           onSendMessage={handleSendMessage}
