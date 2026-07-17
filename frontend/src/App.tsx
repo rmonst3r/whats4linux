@@ -10,6 +10,7 @@ import { Lightbox } from "./components/Lightbox"
 
 import { useUIStore } from "./store"
 import { useAppSettingsStore } from "./store/useAppSettingsStore"
+import { useMuteStore } from "./store/useMuteStore"
 
 type Screen = "login" | "chats" | "settings"
 
@@ -18,7 +19,7 @@ function App() {
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const [status, setStatus] = useState<string>("waiting")
 
-  const { theme, toggleTheme, loaded } = useAppSettingsStore()
+  const { theme, loaded } = useAppSettingsStore()
   const { notifications, addNotification, removeNotification } = useUIStore()
 
   useEffect(() => {
@@ -111,10 +112,21 @@ function App() {
       }, 3000)
     })
 
+    // Keep the muted-chats store fresh so chat rows/info panels stay in sync
+    // with mute changes made anywhere (this app, the phone, another device).
+    const unsubMuteUpdate = EventsOn(
+      "wa:chat_mute_update",
+      (data: { chatId: string; muted: boolean }) => {
+        if (!data?.chatId) return
+        useMuteStore.getState().setMuted(data.chatId, !!data.muted)
+      },
+    )
+
     return () => {
       unsubQR()
       unsubStatus()
       unsubDownload()
+      unsubMuteUpdate()
     }
   }, [addNotification, removeNotification])
 
