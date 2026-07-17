@@ -1661,7 +1661,6 @@ func (ms *MessageStore) GetArchivedChats() map[string]int64 {
 	return archived
 }
 
-
 // MarkMessageDeleted replaces a revoked message's content with a deleted
 // marker, mirroring WhatsApp's "This message was deleted".
 func (ms *MessageStore) MarkMessageDeleted(messageID string) error {
