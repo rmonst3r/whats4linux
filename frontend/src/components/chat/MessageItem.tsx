@@ -43,14 +43,6 @@ export function MessageItem({
   highlightedMessageId,
 }: MessageItemProps) {
   const isFromMe = message.Info.IsFromMe
-  // Debug: log every render and also when the message updates or unmounts
-  // console.log(`[MessageItem] render id=${message.Info.ID} fromMe=${isFromMe} chat=${chatId}`)
-  useEffect(() => {
-    // console.log(`[MessageItem] message updated id=${message.Info.ID}`, message)
-    return () => {
-      // console.log(`[MessageItem] cleanup/unmount id=${message.Info.ID}`)
-    }
-  }, [message.Info.ID, message.Info.Timestamp])
   const content = message.Content
   const isSticker = !!content?.stickerMessage
   const isPending = (message as any).isPending || false
@@ -262,30 +254,27 @@ export function MessageItem({
   return (
     <>
       <div
-        className={clsx(
-          "flex mb-2 group transition duration-200",
-          isFromMe ? "justify-end" : "justify-start",
-          {
-            "bg-[#21C063]/50 dark:bg-[#21C063]/40": highlightedMessageId === message.Info.ID,
-          },
-        )}
+        className={clsx("flex mb-2 group", isFromMe ? "justify-end" : "justify-start", {
+          // The transition is scoped to the highlighted row only — declaring
+          // a blanket `transition` on every row makes scrolling the list
+          // more expensive for no benefit.
+          "bg-[#21C063]/50 dark:bg-[#21C063]/40 transition-colors duration-200":
+            highlightedMessageId === message.Info.ID,
+        })}
       >
         <div
-          className={clsx(
-            "max-w-[85%] lg:max-w-[65%] rounded-lg p-2 mx-5 relative min-w-0",
-            {
-              "w-min": hasMedia,
-              "bg-transparent shadow-none": isSticker,
+          className={clsx("max-w-[85%] lg:max-w-[65%] rounded-lg p-2 mx-5 relative min-w-0", {
+            "w-min": hasMedia,
+            "bg-transparent shadow-none": isSticker,
 
-              // SENT
-              "bg-sent-bubble-bg dark:bg-sent-bubble-dark-bg text-(--color-sent-bubble-text) dark:text-(--color-sent-bubble-dark-text)":
-                isFromMe && !isSticker,
+            // SENT
+            "bg-sent-bubble-bg dark:bg-sent-bubble-dark-bg text-(--color-sent-bubble-text) dark:text-(--color-sent-bubble-dark-text)":
+              isFromMe && !isSticker,
 
-              // RECEIVED
-              "bg-received-bubble-bg dark:bg-received-bubble-dark-bg text-(--color-received-bubble-text) dark:text-(--color-received-bubble-dark-text)":
-                !isFromMe && !isSticker,
-            },
-          )}
+            // RECEIVED
+            "bg-received-bubble-bg dark:bg-received-bubble-dark-bg text-(--color-received-bubble-text) dark:text-(--color-received-bubble-dark-text)":
+              !isFromMe && !isSticker,
+          })}
         >
           {/* Hover reaction trigger just outside the bubble (WhatsApp-style). */}
           <button
@@ -368,10 +357,7 @@ export function MessageItem({
 
           {!isFromMe && chatId.endsWith("@g.us") && (
             <div className="flex items-baseline justify-between gap-4 mb-0.5">
-              <span
-                className="text-[11px] font-semibold truncate"
-                style={{ color: senderColor }}
-              >
+              <span className="text-[11px] font-semibold truncate" style={{ color: senderColor }}>
                 {senderName}
               </span>
               {/* WhatsApp shows the phone number next to the name for senders
