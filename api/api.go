@@ -84,11 +84,15 @@ func (a *Api) Startup(ctx context.Context) {
 	// The window is focused when the app launches; the frontend keeps this in
 	// sync via SetWindowFocused so we don't notify while the user is looking.
 	a.windowFocused.Store(true)
+	// Set the context before anything that may call back into the Api (the
+	// systray command handler needs it for EventsEmit).
+	a.ctx = ctx
 	var err error
 	a.us, err = socket.NewUnixSocket(ctx)
 	if err != nil {
 		panic(err)
 	}
+	a.us.SetCommandHandler(a.trayCommandHandler)
 	go func() {
 		err := a.us.ListenAndServe()
 		if err != nil {
@@ -101,7 +105,6 @@ func (a *Api) Startup(ctx context.Context) {
 		log.Printf("failed to start systray: %v", err)
 	}
 
-	a.ctx = ctx
 	dbLog := waLog.Stdout("Database", settings.GetLogLevel(), true)
 	a.cw, err = wa.NewAppDatabase(ctx)
 	if err != nil {
@@ -188,8 +191,11 @@ func (a *Api) mainEventHandler(evt any) {
 
 		// Raise a desktop notification for genuine incoming messages (not our
 		// own, not reactions, not channel/broadcast posts) while backgrounded.
+		// Respects the global notification switch and per-chat mutes
+		// (including mutes synced from the phone).
 		isFeed := v.Info.Chat.Server == types.NewsletterServer || v.Info.Chat.Server == types.BroadcastServer
-		if messageID != "" && !v.Info.IsFromMe && !isFeed && v.Message.GetReactionMessage() == nil && !a.windowFocused.Load() {
+		if messageID != "" && !v.Info.IsFromMe && !isFeed && v.Message.GetReactionMessage() == nil && !a.windowFocused.Load() &&
+			store.GetNotificationsEnabled() && !a.messageStore.IsChatMuted(v.Info.Chat.String()) {
 			go a.notifyIncoming(v, parsedHTML)
 		}
 
@@ -265,6 +271,12 @@ func (a *Api) mainEventHandler(evt any) {
 		go a.GetCachedAvatar(v.JID.String(), true)
 
 		runtime.EventsEmit(a.ctx, "wa:picture_update", v.JID.String())
+
+	case *events.Mute:
+		// Emitted for mutes set on other devices (e.g. the phone), including
+		// during app-state full sync. Persist so notifications stay quiet.
+		muted := v.Action.GetMuted()
+		a.handleMuteEvent(v.JID, muted, v.Action.GetMuteEndTimestamp())
 
 	case *events.Connected:
 		// For new logins, there might be a problem where the whatsmeow client
