@@ -1,5 +1,17 @@
 @import "tailwindcss";
 
+/* Tailwind v4 preflight sets `button { cursor: default }` (unlike v3).
+   Restore the hand cursor for interactive elements; disabled buttons are
+   excluded so utilities like `cursor-not-allowed` keep working. */
+button:not(:disabled),
+[role="button"]:not([aria-disabled="true"]),
+a,
+select,
+summary,
+label[for] {
+  cursor: pointer;
+}
+
 /* Chat wallpaper: inline SVG doodle tile. Kept as a data URI so it needs no
    network fetch — the old /assets/images/bg-chat-tile-dark.png was never
    shipped, so WebKitGTK painted its broken-image placeholder instead. */

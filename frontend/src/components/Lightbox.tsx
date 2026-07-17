@@ -24,7 +24,7 @@ export function Lightbox() {
 
   return (
     <div
-      className="fixed inset-0 z-[9999] flex items-center justify-center overflow-auto bg-black/90"
+      className="fixed inset-0 z-[9999] flex items-center justify-center overflow-auto bg-black/90 cursor-pointer"
       onClick={close}
     >
       <button
@@ -42,7 +42,7 @@ export function Lightbox() {
           controlsList="nofullscreen"
           disablePictureInPicture
           onClick={e => e.stopPropagation()}
-          className="h-[95vh] w-[95vw] object-contain"
+          className="h-[95vh] w-[95vw] object-contain cursor-default"
         />
       ) : (
         <img
