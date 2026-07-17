@@ -12,6 +12,7 @@ import { ClockPendingIcon, BlueTickIcon, ForwardedIcon } from "../../assets/svgs
 import { useContactStore } from "../../store/useContactStore"
 import { useMessageStore } from "../../store"
 import { isMe } from "../../lib/self"
+import { formatPhone, phoneFromJID } from "../../lib/utils"
 
 const QUICK_REACTIONS = ["👍", "❤️", "😂", "😮", "😢", "🙏"]
 const EmojiPicker = lazy(() => import("@emoji-mart/react"))
@@ -54,6 +55,8 @@ export function MessageItem({
   const isSticker = !!content?.stickerMessage
   const isPending = (message as any).isPending || false
   const isGroup = chatId.endsWith("@g.us")
+  // Empty for @lid senders — those JIDs carry no phone number.
+  const senderPhone = formatPhone(phoneFromJID(message.Info.Sender))
   // Seed sender name/color from the cache synchronously so a cached group
   // message renders correctly on first paint and never re-renders for it.
   const cachedSender =
@@ -364,8 +367,20 @@ export function MessageItem({
           />
 
           {!isFromMe && chatId.endsWith("@g.us") && (
-            <div className="text-[11px] font-semibold mb-0.5" style={{ color: senderColor }}>
-              {senderName}
+            <div className="flex items-baseline justify-between gap-4 mb-0.5">
+              <span
+                className="text-[11px] font-semibold truncate"
+                style={{ color: senderColor }}
+              >
+                {senderName}
+              </span>
+              {/* WhatsApp shows the phone number next to the name for senders
+                  that aren't saved contacts (pushName-only, "~"-prefixed). */}
+              {senderName.startsWith("~") && senderPhone && (
+                <span className="shrink-0 text-[11px] text-black/40 dark:text-white/40">
+                  {senderPhone}
+                </span>
+              )}
             </div>
           )}
           {message.forwarded && (

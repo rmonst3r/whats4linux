@@ -15,6 +15,7 @@ import { ChatHeader } from "../components/chat/ChatHeader"
 import { ChatInput } from "../components/chat/ChatInput"
 import { ChatInfo } from "../components/chat/ChatInfo"
 import clsx from "clsx"
+import { formatPhone } from "../lib/utils"
 import gsap from "gsap"
 import { useGSAP } from "@gsap/react"
 import { getEase } from "../store/useEaseStore"
@@ -94,20 +95,33 @@ export function ChatDetail({ chatId, chatName, chatAvatar, onBack }: ChatDetailP
 
   const currentChat = chatsById.get(chatId)
   const chatType = currentChat?.type || "contact"
+  const [chatSubtitle, setChatSubtitle] = useState("")
 
   useEffect(() => {
+    setChatSubtitle("")
     const loadMentionableContacts = async () => {
       if (chatType === "group") {
         try {
           const groupInfo = await GetGroupInfo(chatId)
+
+          // WhatsApp-style participants line under the group name:
+          // "You, Alice, ~ Bob, +91 98765 43210, …"
+          const participantLabel = (c: any) =>
+            c.full_name ||
+            (c.push_name ? `~ ${c.push_name}` : "") ||
+            c.short ||
+            (c.phno ? formatPhone(c.phno) : "")
           try {
             const self = await GetProfile("")
-            const contacts = groupInfo.group_participants
+            const others = groupInfo.group_participants
               .map((p: any) => p.contact)
               .filter((c: any) => c && c.phno !== self.phno && c.jid !== self.jid)
-            setMentionableContacts(contacts)
+            setChatSubtitle(["You", ...others.map(participantLabel).filter(Boolean)].join(", "))
+            setMentionableContacts(others)
           } catch (err) {
-            setMentionableContacts(groupInfo.group_participants.map((p: any) => p.contact))
+            const contacts = groupInfo.group_participants.map((p: any) => p.contact)
+            setChatSubtitle(contacts.map(participantLabel).filter(Boolean).join(", "))
+            setMentionableContacts(contacts)
           }
         } catch (error) {
           console.error("Failed to fetch group info:", error)
@@ -472,6 +486,7 @@ export function ChatDetail({ chatId, chatName, chatAvatar, onBack }: ChatDetailP
       <div className="flex flex-col flex-1">
         <ChatHeader
           chatName={chatName}
+          chatSubtitle={chatSubtitle}
           chatAvatar={chatAvatar}
           onBack={onBack}
           onInfoClick={() => setChatInfoOpen(!chatInfoOpen)}
