@@ -26,13 +26,17 @@ func (a *Api) ToggleChatPin(jidStr string, pinned bool) error {
 	if err != nil {
 		return err
 	}
-	if err := a.waClient.SendAppState(a.ctx, appstate.BuildPin(jid, pinned)); err != nil {
+	// Local-first: the app's own state must not depend on app-state sync
+	// health. Sync to other devices is best-effort (self-heals via
+	// resyncAppState on the next connect if the hash chain is broken).
+	if err := a.messageStore.SetChatPinned(jidStr, pinned, time.Now().Unix()); err != nil {
 		return err
 	}
-	if err := a.messageStore.SetChatPinned(jidStr, pinned, time.Now().Unix()); err != nil {
-		log.Println("ToggleChatPin: failed to persist:", err)
-	}
 	runtime.EventsEmit(a.ctx, "wa:chat_list_refresh")
+	if err := a.waClient.SendAppState(a.ctx, appstate.BuildPin(jid, pinned)); err != nil {
+		log.Println("ToggleChatPin: app state sync failed (kept local):", err)
+		go a.resyncAppState()
+	}
 	return nil
 }
 
@@ -43,13 +47,15 @@ func (a *Api) ToggleChatArchive(jidStr string, archived bool) error {
 	if err != nil {
 		return err
 	}
-	if err := a.waClient.SendAppState(a.ctx, appstate.BuildArchive(jid, archived, time.Time{}, nil)); err != nil {
+	// Local-first, same reasoning as ToggleChatPin.
+	if err := a.messageStore.SetChatArchived(jidStr, archived, time.Now().Unix()); err != nil {
 		return err
 	}
-	if err := a.messageStore.SetChatArchived(jidStr, archived, time.Now().Unix()); err != nil {
-		log.Println("ToggleChatArchive: failed to persist:", err)
-	}
 	runtime.EventsEmit(a.ctx, "wa:chat_list_refresh")
+	if err := a.waClient.SendAppState(a.ctx, appstate.BuildArchive(jid, archived, time.Time{}, nil)); err != nil {
+		log.Println("ToggleChatArchive: app state sync failed (kept local):", err)
+		go a.resyncAppState()
+	}
 	return nil
 }
 

@@ -20,6 +20,7 @@ import (
 	"github.com/wailsapp/wails/v2/pkg/options"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 	"go.mau.fi/whatsmeow"
+	"go.mau.fi/whatsmeow/appstate"
 	"go.mau.fi/whatsmeow/proto/waE2E"
 	"go.mau.fi/whatsmeow/store/sqlstore"
 	"go.mau.fi/whatsmeow/types"
@@ -37,6 +38,7 @@ type Api struct {
 	us                  *socket.UnixSocket
 	windowFocused       atomic.Bool
 	groupRepairInFlight atomic.Bool
+	appStateResync      atomic.Bool
 }
 
 // repairGroupNames heals whats4linux_groups rows that are missing or were
@@ -79,6 +81,34 @@ func (a *Api) repairGroupNames() {
 		log.Printf("repairGroupNames: repaired %d group name(s)", repaired)
 		runtime.EventsEmit(a.ctx, "wa:chat_list_refresh")
 	}
+}
+
+// resyncAppState fully syncs the regular_low app state collection (archive,
+// pin and mute mutations). When the local hash chain is corrupted
+// ("mismatching LTHash"), incremental sync fails forever and mutations from
+// the phone never arrive — recover by dropping the local version and pulling
+// the collection from scratch. Runs in the background after Connected.
+func (a *Api) resyncAppState() {
+	if !a.appStateResync.CompareAndSwap(false, true) {
+		return
+	}
+	defer a.appStateResync.Store(false)
+
+	name := appstate.WAPatchRegularLow
+	if err := a.waClient.FetchAppState(a.ctx, name, true, false); err == nil {
+		return
+	} else {
+		log.Println("App state full sync failed, resetting local state:", err)
+	}
+	if err := a.waClient.Store.AppState.DeleteAppStateVersion(a.ctx, string(name)); err != nil {
+		log.Println("Failed to delete app state version:", err)
+		return
+	}
+	if err := a.waClient.FetchAppState(a.ctx, name, true, false); err != nil {
+		log.Println("App state resync after reset failed:", err)
+		return
+	}
+	log.Println("App state resynced from scratch:", name)
 }
 
 // htmlTagRE strips HTML tags from message previews so desktop notifications
@@ -333,6 +363,8 @@ func (a *Api) mainEventHandler(evt any) {
 		// Heal group rows with missing/empty names in the background now
 		// that the client can reach the server.
 		go a.repairGroupNames()
+		// Recover archive/pin/mute sync if the local app state is corrupted.
+		go a.resyncAppState()
 		a.waClient.SendPresence(a.ctx, types.PresenceAvailable)
 		// Run migration for messages.db
 		err := a.messageStore.MigrateLIDToPN(a.ctx, a.waClient.Store.LIDs)

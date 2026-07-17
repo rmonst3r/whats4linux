@@ -71,14 +71,12 @@ func (a *Api) ToggleChatMute(chatJID string, muted bool) error {
 	// Store mutes under the canonical (PN) JID so lookups from the message
 	// path always hit the same key.
 	jid = canonicalUserJID(a.ctx, a.waClient, jid)
-	// Duration 0 with muted=true means "muted forever" (see appstate.BuildMute).
-	if err := a.waClient.SendAppState(a.ctx, appstate.BuildMute(jid, muted, 0)); err != nil {
-		return err
-	}
 	var mutedUntil int64 // 0 deletes the local mute row
 	if muted {
 		mutedUntil = -1 // forever
 	}
+	// Local-first: our own notification gating must not depend on app-state
+	// sync health. Phone sync is best-effort below.
 	if err := a.messageStore.SetChatMuted(jid.String(), mutedUntil); err != nil {
 		return err
 	}
@@ -86,6 +84,11 @@ func (a *Api) ToggleChatMute(chatJID string, muted bool) error {
 		"chatId": jid.String(),
 		"muted":  muted,
 	})
+	// Duration 0 with muted=true means "muted forever" (see appstate.BuildMute).
+	if err := a.waClient.SendAppState(a.ctx, appstate.BuildMute(jid, muted, 0)); err != nil {
+		log.Println("ToggleChatMute: app state sync failed (kept local):", err)
+		go a.resyncAppState()
+	}
 	return nil
 }
 
