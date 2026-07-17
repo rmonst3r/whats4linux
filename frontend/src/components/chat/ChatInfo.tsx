@@ -243,7 +243,7 @@ export function ChatInfo({
                       </div>
 
                       {participant.is_admin && (
-                        <span className="text-xs px-3 py-1 rounded-full bg-green-900/30 text-[#C8ECC5]">
+                        <span className="text-xs px-3 py-1 rounded-full bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-[#C8ECC5]">
                           Group admin
                         </span>
                       )}
