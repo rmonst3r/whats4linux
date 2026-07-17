@@ -159,8 +159,7 @@ function sha1Bytes(message: string): Uint8Array {
 function colorIndex(jid: string, paletteLen: number): number {
   if (!jid) return 0
   const hash = sha1Bytes(jid)
-  const hashInt =
-    ((hash[0] << 24) | (hash[1] << 16) | (hash[2] << 8) | hash[3]) >>> 0
+  const hashInt = ((hash[0] << 24) | (hash[1] << 16) | (hash[2] << 8) | hash[3]) >>> 0
   return hashInt % paletteLen
 }
 
