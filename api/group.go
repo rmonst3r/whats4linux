@@ -2,6 +2,7 @@ package api
 
 import (
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -26,6 +27,13 @@ type GroupParticipant struct {
 }
 
 func (a *Api) FetchGroups() ([]wa.Group, error) {
+	// Refresh local cache so community parent links stay current.
+	if a.cw != nil {
+		if err := a.cw.FetchAndStoreGroups(a.waClient); err != nil {
+			log.Println("FetchGroups: cache refresh failed:", err)
+		}
+	}
+
 	groups, err := a.waClient.GetJoinedGroups(a.ctx)
 	if err != nil {
 		return nil, err
@@ -33,12 +41,19 @@ func (a *Api) FetchGroups() ([]wa.Group, error) {
 
 	var result []wa.Group
 	for _, g := range groups {
+		parentJID := ""
+		if !g.LinkedParentJID.IsEmpty() {
+			parentJID = g.LinkedParentJID.String()
+		}
 		result = append(result, wa.Group{
 			JID:              g.JID.String(),
 			Name:             g.Name,
 			Topic:            g.Topic,
 			OwnerJID:         g.OwnerJID.String(),
 			ParticipantCount: len(g.Participants),
+			ParentJID:        parentJID,
+			IsParent:         g.IsParent,
+			IsDefaultSub:     g.IsDefaultSubGroup,
 		})
 	}
 	return result, nil

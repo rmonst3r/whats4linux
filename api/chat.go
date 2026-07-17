@@ -17,6 +17,13 @@ type ChatElement struct {
 	PinnedAt      int64 `json:"pinned_at"`
 	Archived      bool  `json:"archived"`
 	Contact
+
+	// Community linkage (populated for groups that belong to a community).
+	ParentJID         string `json:"parent_jid,omitempty"`
+	ParentName        string `json:"parent_name,omitempty"`
+	IsCommunityGroup  bool   `json:"is_community_group"`
+	IsCommunityParent bool   `json:"is_community_parent"`
+	IsDefaultSubGroup bool   `json:"is_default_sub_group"`
 }
 
 // ToggleChatPin pins/unpins a chat: syncs the change to other devices via
@@ -66,6 +73,9 @@ func (a *Api) GetChatList() ([]ChatElement, error) {
 	ce := make([]ChatElement, len(cmList))
 	for i, cm := range cmList {
 		var fc Contact
+		var parentJID, parentName string
+		var isCommunityGroup, isCommunityParent, isDefaultSub bool
+
 		if cm.JID.Server == types.GroupServer {
 			// Local-only on purpose: this runs at startup before the client
 			// has connected, so it must never touch the network. Empty names
@@ -73,6 +83,14 @@ func (a *Api) GetChatList() ([]ChatElement, error) {
 			name := ""
 			if groupInfo, err := a.cw.FetchGroup(cm.JID.String()); err == nil {
 				name = groupInfo.Name
+				parentJID = groupInfo.ParentJID
+				parentName = groupInfo.ParentName
+				if parentName == "" && parentJID != "" {
+					parentName = a.cw.ParentCommunityName(parentJID)
+				}
+				isCommunityGroup = parentJID != ""
+				isCommunityParent = groupInfo.IsParent
+				isDefaultSub = groupInfo.IsDefaultSub
 			} else {
 				log.Println("GetChatList: group lookup failed, using fallback:", cm.JID.String(), err)
 			}
@@ -107,13 +125,18 @@ func (a *Api) GetChatList() ([]ChatElement, error) {
 		pinnedAt, pinned := pinnedChats[cm.JID.String()]
 		_, archived := archivedChats[cm.JID.String()]
 		ce[i] = ChatElement{
-			LatestMessage: cm.MessageText,
-			LatestTS:      cm.MessageTime,
-			Sender:        cm.Sender,
-			Pinned:        pinned,
-			PinnedAt:      pinnedAt,
-			Archived:      archived,
-			Contact:       fc,
+			LatestMessage:     cm.MessageText,
+			LatestTS:          cm.MessageTime,
+			Sender:            cm.Sender,
+			Pinned:            pinned,
+			PinnedAt:          pinnedAt,
+			Archived:          archived,
+			Contact:           fc,
+			ParentJID:         parentJID,
+			ParentName:        parentName,
+			IsCommunityGroup:  isCommunityGroup,
+			IsCommunityParent: isCommunityParent,
+			IsDefaultSubGroup: isDefaultSub,
 		}
 	}
 	return ce, nil

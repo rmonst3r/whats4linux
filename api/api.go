@@ -64,12 +64,20 @@ func (a *Api) repairGroupNames() {
 		if err != nil || gi == nil || gi.GroupName.Name == "" {
 			continue
 		}
+		parentJID := ""
+		if !gi.LinkedParentJID.IsEmpty() {
+			parentJID = gi.LinkedParentJID.String()
+		}
 		if err := a.cw.StoreGroup(wa.Group{
 			JID:              cm.JID.String(),
 			Name:             gi.GroupName.Name,
 			Topic:            gi.GroupTopic.Topic,
 			OwnerJID:         gi.OwnerJID.String(),
 			ParticipantCount: len(gi.Participants),
+			ParentJID:        parentJID,
+			ParentName:       a.cw.ParentCommunityName(parentJID),
+			IsParent:         gi.IsParent,
+			IsDefaultSub:     gi.IsDefaultSubGroup,
 		}); err != nil {
 			log.Println("repairGroupNames: failed to persist group:", cm.JID.String(), err)
 			continue
