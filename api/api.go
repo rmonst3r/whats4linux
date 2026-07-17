@@ -94,21 +94,19 @@ func (a *Api) resyncAppState() {
 	}
 	defer a.appStateResync.Store(false)
 
-	name := appstate.WAPatchRegularLow
-	if err := a.waClient.FetchAppState(a.ctx, name, true, false); err == nil {
-		return
-	} else {
-		log.Println("App state full sync failed, resetting local state:", err)
+	// regular_low carries archive/pin mutations, regular_high carries mutes.
+	// FetchAppState with fullSync=true resets the local version itself and
+	// re-applies the collection from a server snapshot; with
+	// EmitAppStateEventsOnFullSync set, every mutation is dispatched to
+	// mainEventHandler (FromFullSync=true) and lands in our tables.
+	for _, name := range []appstate.WAPatchName{appstate.WAPatchRegularLow, appstate.WAPatchRegularHigh} {
+		if err := a.waClient.FetchAppState(a.ctx, name, true, false); err != nil {
+			log.Printf("App state full sync failed for %s: %v", name, err)
+			continue
+		}
+		log.Println("App state fully synced:", name)
 	}
-	if err := a.waClient.Store.AppState.DeleteAppStateVersion(a.ctx, string(name)); err != nil {
-		log.Println("Failed to delete app state version:", err)
-		return
-	}
-	if err := a.waClient.FetchAppState(a.ctx, name, true, false); err != nil {
-		log.Println("App state resync after reset failed:", err)
-		return
-	}
-	log.Println("App state resynced from scratch:", name)
+	runtime.EventsEmit(a.ctx, "wa:chat_list_refresh")
 }
 
 // htmlTagRE strips HTML tags from message previews so desktop notifications
