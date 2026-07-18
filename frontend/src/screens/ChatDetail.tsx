@@ -215,7 +215,7 @@ export function ChatDetail({ chatId, chatName, chatAvatar, onBack }: ChatDetailP
     setInitialLoad(true)
     setIsReady(false)
     try {
-      const msgs = await FetchMessagesPaged(chatId, PAGE_SIZE, 0)
+      const msgs = await FetchMessagesPaged(chatId, PAGE_SIZE, 0, "")
       const loadedMsgs = msgs || []
 
       setMessages(chatId, loadedMsgs)
@@ -243,7 +243,12 @@ export function ChatDetail({ chatId, chatName, chatAvatar, onBack }: ChatDetailP
     const beforeTimestamp = Math.floor(new Date(oldestMessage.Info.Timestamp).getTime() / 1000)
 
     try {
-      const msgs = await FetchMessagesPaged(chatId, PAGE_SIZE, beforeTimestamp)
+      const msgs = await FetchMessagesPaged(
+        chatId,
+        PAGE_SIZE,
+        beforeTimestamp,
+        oldestMessage.Info.ID,
+      )
       if (msgs && msgs.length > 0) {
         // Decrement the Virtuoso anchor by the number prepended so it keeps the
         // current scroll position instead of jumping. Virtuoso handles the rest.
@@ -449,26 +454,27 @@ export function ChatDetail({ chatId, chatName, chatAvatar, onBack }: ChatDetailP
     try {
       if (imageToSend) {
         const base64 = imageToSend.split(",")[1]
+        const mimetype = imageToSend.match(/^data:([^;,]+)/)?.[1] || "image/png"
         await SendMessage(chatId, {
           type: "image",
           base64Data: base64,
+          mimetype,
           text: processedText,
           quotedMessageId,
           mentions: mentionsToSend,
         })
       } else if (fileToSend) {
-        const reader = new FileReader()
-        reader.onload = async event => {
-          const base64 = (event.target?.result as string).split(",")[1]
-          await SendMessage(chatId, {
-            type: fileTypeToSend,
-            base64Data: base64,
-            text: processedText,
-            quotedMessageId,
-            mentions: mentionsToSend,
-          })
-        }
-        reader.readAsDataURL(fileToSend)
+        const dataURL = await blobToDataURL(fileToSend)
+        const base64 = dataURL.split(",")[1]
+        await SendMessage(chatId, {
+          type: fileTypeToSend,
+          base64Data: base64,
+          mimetype: fileToSend.type || "application/octet-stream",
+          fileName: fileToSend.name,
+          text: processedText,
+          quotedMessageId,
+          mentions: mentionsToSend,
+        })
       } else {
         await SendMessage(chatId, {
           type: "text",
@@ -681,7 +687,12 @@ export function ChatDetail({ chatId, chatName, chatAvatar, onBack }: ChatDetailP
             const file = e.target.files?.[0]
             if (file) {
               setSelectedFile(file)
-              setSelectedFileType(file.type.split("/")[0])
+              const generalType = file.type.split("/")[0]
+              setSelectedFileType(
+                generalType === "image" || generalType === "video" || generalType === "audio"
+                  ? generalType
+                  : "document",
+              )
             }
           }}
           onRemoveFile={() => {

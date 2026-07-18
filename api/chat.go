@@ -42,7 +42,7 @@ func (a *Api) ToggleChatPin(jidStr string, pinned bool) error {
 	runtime.EventsEmit(a.ctx, "wa:chat_list_refresh")
 	if err := a.waClient.SendAppState(a.ctx, appstate.BuildPin(jid, pinned)); err != nil {
 		log.Println("ToggleChatPin: app state sync failed (kept local):", err)
-		go a.resyncAppState()
+		a.startBackground(a.resyncAppState)
 	}
 	return nil
 }
@@ -61,7 +61,7 @@ func (a *Api) ToggleChatArchive(jidStr string, archived bool) error {
 	runtime.EventsEmit(a.ctx, "wa:chat_list_refresh")
 	if err := a.waClient.SendAppState(a.ctx, appstate.BuildArchive(jid, archived, time.Time{}, nil)); err != nil {
 		log.Println("ToggleChatArchive: app state sync failed (kept local):", err)
-		go a.resyncAppState()
+		a.startBackground(a.resyncAppState)
 	}
 	return nil
 }

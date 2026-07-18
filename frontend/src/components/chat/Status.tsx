@@ -26,7 +26,8 @@ export function StatusList({ onOpen }: { onOpen: (g: StatusGroup) => void }) {
   useEffect(() => {
     let cancelled = false
     ;(async () => {
-      const msgs = ((await FetchMessagesPaged(STATUS_JID, 300, 0)) || []) as store.DecodedMessage[]
+      const msgs = ((await FetchMessagesPaged(STATUS_JID, 300, 0, "")) ||
+        []) as store.DecodedMessage[]
       const bySender = new Map<string, store.DecodedMessage[]>()
       for (const m of msgs) {
         const s = m.Info?.Sender

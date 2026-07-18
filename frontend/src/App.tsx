@@ -18,6 +18,7 @@ type Screen = "login" | "chats" | "settings"
 function App() {
   const [screen, setScreen] = useState<Screen>("login")
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
+  const loginStartedRef = useRef(false)
   const [status, setStatus] = useState<string>("waiting")
 
   const { theme, loaded } = useAppSettingsStore()
@@ -64,9 +65,6 @@ function App() {
   }, [])
 
   useEffect(() => {
-    Login()
-    initSelf()
-
     GetCustomCSS().then(css => {
       if (css) {
         const style = document.createElement("style")
@@ -99,6 +97,7 @@ function App() {
       setStatus(status)
       if (status === "logged_in" || status === "success") {
         setScreen("chats")
+        void initSelf()
       }
     })
 
@@ -118,6 +117,13 @@ function App() {
         useMuteStore.getState().setMuted(data.chatId, !!data.muted)
       },
     )
+
+    // Register all status listeners before starting login. Existing sessions
+    // can complete quickly enough to otherwise lose the "logged_in" event.
+    if (!loginStartedRef.current) {
+      loginStartedRef.current = true
+      void Login().catch(err => setStatus(`error: ${String(err)}`))
+    }
 
     return () => {
       unsubQR()

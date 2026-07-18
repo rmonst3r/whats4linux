@@ -32,6 +32,14 @@ const (
 	SELECT id, message_id, sender_id, emoji
 	FROM reactions
 	WHERE message_id = ?
-	ORDER BY id ASC
-	`
+		ORDER BY id ASC
+		`
+
+	// SelectReactionsByMessageIDsPrefix is completed with a placeholder list
+	// and a closing parenthesis.
+	SelectReactionsByMessageIDsPrefix = `
+		SELECT id, message_id, sender_id, emoji
+		FROM reactions
+		WHERE message_id IN (
+		`
 )

@@ -23,6 +23,8 @@ type MessageContent struct {
 	Type            string   `json:"type"`
 	Text            string   `json:"text,omitempty"`
 	Base64Data      string   `json:"base64Data,omitempty"`
+	Mimetype        string   `json:"mimetype,omitempty"`
+	FileName        string   `json:"fileName,omitempty"`
 	QuotedMessageID string   `json:"quotedMessageId,omitempty"`
 	Mentions        []string `json:"mentions,omitempty"`
 }
@@ -76,8 +78,8 @@ func (a *Api) processMessageText(msg *waE2E.Message) string {
 	return htmlText
 }
 
-func (a *Api) FetchMessagesPaged(jid string, limit int, beforeTimestamp int64) ([]store.DecodedMessage, error) {
-	messages, err := a.messageStore.GetDecodedMessagesPaged(jid, beforeTimestamp, limit)
+func (a *Api) FetchMessagesPaged(jid string, limit int, beforeTimestamp int64, beforeMessageID string) ([]store.DecodedMessage, error) {
+	messages, err := a.messageStore.GetDecodedMessagesPaged(jid, beforeTimestamp, beforeMessageID, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -257,7 +259,10 @@ func (a *Api) SendMessage(chatJID string, content MessageContent) (string, error
 		}
 
 		// Create image message
-		mimeType := "image/jpeg"
+		mimeType := content.Mimetype
+		if mimeType == "" {
+			mimeType = "image/jpeg"
+		}
 		imageMsg := &waE2E.ImageMessage{
 			Mimetype:      &mimeType,
 			Caption:       &content.Text,
@@ -298,7 +303,10 @@ func (a *Api) SendMessage(chatJID string, content MessageContent) (string, error
 		}
 
 		// Create video message
-		mimeType := "video/mp4"
+		mimeType := content.Mimetype
+		if mimeType == "" {
+			mimeType = "video/mp4"
+		}
 		videoMsg := &waE2E.VideoMessage{
 			Mimetype:      &mimeType,
 			Caption:       &content.Text,
@@ -339,7 +347,10 @@ func (a *Api) SendMessage(chatJID string, content MessageContent) (string, error
 		}
 
 		// Create audio message
-		mimeType := "audio/ogg"
+		mimeType := content.Mimetype
+		if mimeType == "" {
+			mimeType = "audio/ogg"
+		}
 		audioMsg := &waE2E.AudioMessage{
 			Mimetype: &mimeType,
 		}
@@ -372,8 +383,14 @@ func (a *Api) SendMessage(chatJID string, content MessageContent) (string, error
 		}
 
 		// Create document message
-		mimeType := "application/pdf" // Default, should be detected
-		fileName := "document.pdf"    // Default, should be provided
+		mimeType := content.Mimetype
+		if mimeType == "" {
+			mimeType = "application/octet-stream"
+		}
+		fileName := strings.TrimSpace(content.FileName)
+		if fileName == "" {
+			fileName = "document"
+		}
 		documentMsg := &waE2E.DocumentMessage{
 			Mimetype: &mimeType,
 			FileName: &fileName,
@@ -414,7 +431,10 @@ func (a *Api) SendMessage(chatJID string, content MessageContent) (string, error
 		}
 
 		// Create sticker message
-		mimeType := "image/webp"
+		mimeType := content.Mimetype
+		if mimeType == "" {
+			mimeType = "image/webp"
+		}
 		stickerMsg := &waE2E.StickerMessage{
 			Mimetype: &mimeType,
 		}

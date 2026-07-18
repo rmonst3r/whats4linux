@@ -17,9 +17,10 @@ const (
 		forwarded BOOLEAN DEFAULT FALSE,
 		type INTEGER DEFAULT 0
 	);
-	CREATE INDEX IF NOT EXISTS idx_messages_chat_jid ON messages(chat_jid);
-	CREATE INDEX IF NOT EXISTS idx_messages_sender_jid ON messages(sender_jid);
-	CREATE INDEX IF NOT EXISTS idx_messages_timestamp ON messages(timestamp DESC);
+		CREATE INDEX IF NOT EXISTS idx_messages_chat_jid ON messages(chat_jid);
+		CREATE INDEX IF NOT EXISTS idx_messages_sender_jid ON messages(sender_jid);
+		CREATE INDEX IF NOT EXISTS idx_messages_timestamp ON messages(timestamp DESC);
+		CREATE INDEX IF NOT EXISTS idx_messages_chat_cursor ON messages(chat_jid, timestamp DESC, message_id DESC);
 	`
 
 	InsertMessage = `
@@ -41,7 +42,8 @@ const (
 	`
 
 	SelectDecodedMessageByChatAndID = `
-	SELECT m.sender_jid, m.timestamp, m.is_from_me, m.text, m.reply_to_message_id, m.edited, m.forwarded, mm.type, mm.file_name
+	SELECT m.sender_jid, m.timestamp, m.is_from_me, m.text, m.reply_to_message_id, m.edited, m.forwarded,
+	       mm.type, mm.file_name, mm.width, mm.height, mm.gif_playback
 	FROM messages AS m
 	LEFT JOIN message_media AS mm ON mm.message_id = m.message_id
 	WHERE m.chat_jid = ? AND m.message_id = ?
@@ -61,30 +63,43 @@ const (
 	`
 
 	// Messages.db paged queries (for frontend)
-	SelectMessagesByChatBeforeTimestamp = `
-	SELECT m.message_id, m.chat_jid, m.sender_jid, m.timestamp, m.is_from_me, m.text, m.reply_to_message_id, m.edited, m.forwarded, mm.type, mm.file_name
-	FROM (
-		SELECT message_id, chat_jid, sender_jid, timestamp, is_from_me, text, reply_to_message_id, edited, forwarded
-		FROM messages
-		WHERE chat_jid = ? AND timestamp < ?
-		ORDER BY timestamp DESC
-		LIMIT ?
-	) AS m 
-	LEFT JOIN message_media AS mm ON mm.message_id = m.message_id
-	ORDER BY m.timestamp ASC
-	`
-
-	SelectLatestMessagesByChat = `
-	SELECT m.message_id, m.chat_jid, m.sender_jid, m.timestamp, m.is_from_me, m.text, m.reply_to_message_id, m.edited, m.forwarded, mm.type, mm.file_name
+	SelectMessagesByChatBeforeCursor = `
+	SELECT m.message_id, m.chat_jid, m.sender_jid, m.timestamp, m.is_from_me, m.text, m.reply_to_message_id, m.edited, m.forwarded,
+	       mm.type, mm.file_name, mm.width, mm.height, mm.gif_playback
 	FROM (
 		SELECT message_id, chat_jid, sender_jid, timestamp, is_from_me, text, reply_to_message_id, edited, forwarded
 		FROM messages
 		WHERE chat_jid = ?
-		ORDER BY timestamp DESC
+		  AND (timestamp < ? OR (timestamp = ? AND message_id < ?))
+		ORDER BY timestamp DESC, message_id DESC
+		LIMIT ?
+	) AS m 
+	LEFT JOIN message_media AS mm ON mm.message_id = m.message_id
+	ORDER BY m.timestamp ASC, m.message_id ASC
+	`
+
+	SelectLatestMessagesByChat = `
+	SELECT m.message_id, m.chat_jid, m.sender_jid, m.timestamp, m.is_from_me, m.text, m.reply_to_message_id, m.edited, m.forwarded,
+	       mm.type, mm.file_name, mm.width, mm.height, mm.gif_playback
+	FROM (
+		SELECT message_id, chat_jid, sender_jid, timestamp, is_from_me, text, reply_to_message_id, edited, forwarded
+		FROM messages
+		WHERE chat_jid = ?
+		ORDER BY timestamp DESC, message_id DESC
 		LIMIT ?
 	) AS m
 	LEFT JOIN message_media AS mm ON mm.message_id = m.message_id
-	ORDER BY m.timestamp ASC
+	ORDER BY m.timestamp ASC, m.message_id ASC
+	`
+
+	// SelectDecodedMessagesByIDPrefix is completed with a placeholder list and
+	// a closing parenthesis. It loads quoted-message summaries in one query.
+	SelectDecodedMessagesByIDPrefix = `
+	SELECT m.message_id, m.sender_jid, m.text, mm.type, mm.file_name,
+	       mm.width, mm.height, mm.gif_playback
+	FROM messages AS m
+	LEFT JOIN message_media AS mm ON mm.message_id = m.message_id
+	WHERE m.message_id IN (
 	`
 
 	SelectMessageByChatAndID = `

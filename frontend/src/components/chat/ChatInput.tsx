@@ -1,6 +1,5 @@
 import React, { lazy, Suspense, useState, useRef, useEffect } from "react"
 import clsx from "clsx"
-import data from "@emoji-mart/data"
 import {
   EmojiIcon,
   AttachIcon,
@@ -14,7 +13,7 @@ import { useContactStore } from "../../store/useContactStore"
 import { PollDialog } from "./PollDialog"
 import { ContactShareDialog } from "./ContactShareDialog"
 
-const EmojiPicker = lazy(() => import("@emoji-mart/react"))
+const EmojiPicker = lazy(() => import("./EmojiPickerLazy"))
 interface ChatInputProps {
   chatId: string
   inputText: string
@@ -387,7 +386,6 @@ export function ChatInput({
         <div ref={emojiPickerRef} className="absolute bottom-full left-0 z-50 mb-2">
           <Suspense fallback={<div className="p-4 text-sm">Loading emojis...</div>}>
             <EmojiPicker
-              data={data}
               onEmojiSelect={handleEmojiSelect}
               theme="auto"
               previewPosition="none"

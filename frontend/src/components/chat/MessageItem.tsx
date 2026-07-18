@@ -1,5 +1,4 @@
 import React, { useState, useEffect, useMemo, lazy, Suspense } from "react"
-import emojiData from "@emoji-mart/data"
 import { store } from "../../../wailsjs/go/models"
 import {
   DownloadImageToFile,
@@ -25,7 +24,7 @@ import { isMe } from "../../lib/self"
 import { formatPhone, phoneFromJID } from "../../lib/utils"
 
 const QUICK_REACTIONS = ["👍", "❤️", "😂", "😮", "😢", "🙏"]
-const EmojiPicker = lazy(() => import("@emoji-mart/react"))
+const EmojiPicker = lazy(() => import("./EmojiPickerLazy"))
 
 interface MessageItemProps {
   message: store.DecodedMessage
@@ -127,14 +126,6 @@ export function MessageItem({
 
   const handleReply = () => onReply?.(message)
 
-  const handleReplyPrivately = () => {
-    // TODO: Implement reply privately functionality
-  }
-
-  const handleMessage = () => {
-    // TODO: Implement message functionality
-  }
-
   const handleCopy = () => {
     const textToCopy = content?.conversation || content?.extendedTextMessage?.text || ""
     if (textToCopy) {
@@ -160,28 +151,12 @@ export function MessageItem({
     setShowFullEmoji(false)
   }
 
-  const handleForward = () => {
-    // TODO: Implement forward functionality
-  }
-
   const isPinned = pinnedIds?.has(message.Info.ID) ?? false
 
   const handlePin = () => {
     SetMessagePinned(chatId, message.Info.Sender, message.Info.ID, isFromMe, !isPinned).catch(err =>
       console.error("Failed to toggle message pin:", err),
     )
-  }
-
-  const handleStar = () => {
-    // TODO: Implement star functionality
-  }
-
-  const handleReport = () => {
-    // TODO: Implement report functionality
-  }
-
-  const handleDelete = () => {
-    // TODO: Implement delete functionality
   }
 
   // Fetch group member name + color from the cached store (one RPC per sender,
@@ -441,7 +416,6 @@ export function MessageItem({
                 }
               >
                 <EmojiPicker
-                  data={emojiData}
                   onEmojiSelect={(e: any) => sendReaction(e.native)}
                   onClickOutside={() => setShowFullEmoji(false)}
                   theme="auto"
@@ -458,14 +432,8 @@ export function MessageItem({
             isPinned={isPinned}
             onPin={handlePin}
             onReply={handleReply}
-            onReplyPrivately={!isFromMe ? handleReplyPrivately : undefined}
-            onMessage={!isFromMe ? handleMessage : undefined}
             onCopy={handleCopy}
             onReact={handleReact}
-            onForward={handleForward}
-            onStar={handleStar}
-            onReport={!isFromMe ? handleReport : undefined}
-            onDelete={handleDelete}
           />
 
           {!isFromMe && chatId.endsWith("@g.us") && firstInGroup && (

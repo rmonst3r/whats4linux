@@ -20,10 +20,12 @@ var UDSPath = os.TempDir() + "/whats4linux.sock"
 type CommandHandler func(cmd string) (reply string, handled bool)
 
 type UnixSocket struct {
-	mu      sync.Mutex
-	ctx     context.Context
-	conn    net.Conn
-	handler CommandHandler
+	mu       sync.Mutex
+	ctx      context.Context
+	conn     net.Conn
+	listener net.Listener
+	handler  CommandHandler
+	closed   bool
 }
 
 func NewUnixSocket(ctx context.Context) (*UnixSocket, error) {
@@ -48,10 +50,32 @@ func (s *UnixSocket) ListenAndServe() error {
 	if err != nil {
 		return err
 	}
-	defer listener.Close()
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		_ = listener.Close()
+		_ = os.Remove(UDSPath)
+		return nil
+	}
+	s.listener = listener
+	s.mu.Unlock()
+	defer func() {
+		_ = listener.Close()
+		s.mu.Lock()
+		if s.listener == listener {
+			s.listener = nil
+		}
+		s.mu.Unlock()
+	}()
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
+			s.mu.Lock()
+			closed := s.closed
+			s.mu.Unlock()
+			if closed {
+				return nil
+			}
 			log.Println("accept error:", err)
 			continue
 		}
@@ -125,4 +149,34 @@ func (s *UnixSocket) SendCommand(cmd string) error {
 		s.conn = nil
 	}
 	return err
+}
+
+// Close stops the listener, closes the tray connection, and removes the socket
+// file. It is safe to call more than once.
+func (s *UnixSocket) Close() error {
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return nil
+	}
+	s.closed = true
+	listener := s.listener
+	conn := s.conn
+	s.listener = nil
+	s.conn = nil
+	s.mu.Unlock()
+
+	var closeErr error
+	if conn != nil {
+		closeErr = conn.Close()
+	}
+	if listener != nil {
+		if err := listener.Close(); closeErr == nil {
+			closeErr = err
+		}
+	}
+	if err := os.Remove(UDSPath); err != nil && !os.IsNotExist(err) && closeErr == nil {
+		closeErr = err
+	}
+	return closeErr
 }

@@ -203,7 +203,7 @@ func (a *Api) GetCachedAvatar(jid string, recache bool) (string, error) {
 	}
 	if err != nil || pic == nil {
 		if recache {
-			go a.imageCache.DeleteAvatar(jid)
+			a.startBackground(func() { _ = a.imageCache.DeleteAvatar(jid) })
 		}
 		return "", nil // No avatar available
 	}
@@ -259,10 +259,13 @@ func (a *Api) downloadAvatarFromURL(jid, url string) (string, error) {
 // contains the device ID like so:
 // XXXX:45@s.whatsapp.net instead of XXXX:@s.whatsapp.net
 func (a *Api) GetSelfAvatar(recache bool) (string, error) {
+	if a.waClient == nil || a.waClient.Store.ID == nil {
+		return "", fmt.Errorf("not logged in")
+	}
 	jid := canonicalUserJID(a.ctx, a.waClient, *a.waClient.Store.ID)
 	selfJID := jid.String()
 
-	avatar, err := a.GetCachedAvatar(selfJID, true)
+	avatar, err := a.GetCachedAvatar(selfJID, recache)
 	if err != nil {
 		log.Printf("[SelfAvatar] GetCachedAvatar failed: %v", err)
 		return "", err

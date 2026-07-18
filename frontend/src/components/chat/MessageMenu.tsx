@@ -1,32 +1,15 @@
 import { useState, useRef, useEffect, useLayoutEffect } from "react"
 import { createPortal } from "react-dom"
-import {
-  ReplyIcon,
-  ReplyPrivatelyIcon,
-  MessageIcon,
-  CopyIcon,
-  ReactIcon,
-  ForwardIcon,
-  StarIcon,
-  ReportIcon,
-  DeleteIcon,
-  MenuArrowIcon,
-} from "../../assets/svgs/message_menu_icons"
+import { ReplyIcon, CopyIcon, ReactIcon, MenuArrowIcon } from "../../assets/svgs/message_menu_icons"
 
 interface MessageMenuProps {
   messageId: string
   isFromMe: boolean
   isPinned?: boolean
   onReply?: () => void
-  onReplyPrivately?: () => void
-  onMessage?: () => void
   onCopy?: () => void
   onReact?: () => void
-  onForward?: () => void
   onPin?: () => void
-  onStar?: () => void
-  onReport?: () => void
-  onDelete?: () => void
 }
 
 // Same pin glyph as the chat list, sized for menu rows.
@@ -41,15 +24,9 @@ export function MessageMenu({
   isFromMe,
   isPinned,
   onReply,
-  onReplyPrivately,
-  onMessage,
   onCopy,
   onReact,
-  onForward,
   onPin,
-  onStar,
-  onReport,
-  onDelete,
 }: MessageMenuProps) {
   const [isMenuOpen, setIsMenuOpen] = useState(false)
   const [isClosing, setIsClosing] = useState(false)
@@ -167,26 +144,6 @@ export function MessageMenu({
               <span>Reply</span>
             </button>
 
-            {!isFromMe && onReplyPrivately && (
-              <button
-                onClick={() => handleMenuItemClick(onReplyPrivately)}
-                className="rounded-xl w-full px-4 py-2.5 text-left flex items-center gap-3 hover:bg-gray-100 dark:hover:bg-dark-tertiary transition-colors text-gray-800 dark:text-gray-200 text-sm"
-              >
-                <ReplyPrivatelyIcon />
-                <span>Reply privately</span>
-              </button>
-            )}
-
-            {!isFromMe && onMessage && (
-              <button
-                onClick={() => handleMenuItemClick(onMessage)}
-                className="rounded-xl w-full px-4 py-2.5 text-left flex items-center gap-3 hover:bg-gray-100 dark:hover:bg-dark-tertiary transition-colors text-gray-800 dark:text-gray-200 text-sm"
-              >
-                <MessageIcon />
-                <span>Message</span>
-              </button>
-            )}
-
             <button
               onClick={() => handleMenuItemClick(onCopy)}
               className="rounded-xl w-full px-4 py-2.5 text-left flex items-center gap-3 hover:bg-gray-100 dark:hover:bg-dark-tertiary transition-colors text-gray-800 dark:text-gray-200 text-sm"
@@ -203,14 +160,6 @@ export function MessageMenu({
               <span>React</span>
             </button>
 
-            <button
-              onClick={() => handleMenuItemClick(onForward)}
-              className="rounded-xl w-full px-4 py-2.5 text-left flex items-center gap-3 hover:bg-gray-100 dark:hover:bg-dark-tertiary transition-colors text-gray-800 dark:text-gray-200 text-sm"
-            >
-              <ForwardIcon />
-              <span>Forward</span>
-            </button>
-
             {onPin && (
               <button
                 onClick={() => handleMenuItemClick(onPin)}
@@ -220,32 +169,6 @@ export function MessageMenu({
                 <span>{isPinned ? "Unpin" : "Pin"}</span>
               </button>
             )}
-
-            <button
-              onClick={() => handleMenuItemClick(onStar)}
-              className="rounded-xl w-full px-4 py-2.5 text-left flex items-center gap-3 hover:bg-gray-100 dark:hover:bg-dark-tertiary transition-colors text-gray-800 dark:text-gray-200 text-sm"
-            >
-              <StarIcon />
-              <span>Star</span>
-            </button>
-
-            {!isFromMe && onReport && (
-              <button
-                onClick={() => handleMenuItemClick(onReport)}
-                className="rounded-xl w-full px-4 py-2.5 text-left flex items-center gap-3 hover:bg-gray-100 dark:hover:bg-dark-tertiary transition-colors text-gray-800 dark:text-gray-200 text-sm"
-              >
-                <ReportIcon />
-                <span>Report</span>
-              </button>
-            )}
-
-            <button
-              onClick={() => handleMenuItemClick(onDelete)}
-              className="rounded-xl w-full px-4 py-2.5 text-left flex items-center gap-3 hover:bg-gray-100 dark:hover:bg-dark-tertiary transition-colors text-gray-800 dark:text-gray-200 text-sm"
-            >
-              <DeleteIcon />
-              <span>Delete</span>
-            </button>
           </div>,
           document.body,
         )}

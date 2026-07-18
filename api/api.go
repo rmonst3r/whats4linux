@@ -4,9 +4,11 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"log"
 	"regexp"
 	"strings"
+	"sync"
 	"sync/atomic"
 
 	"github.com/gen2brain/beeep"
@@ -36,6 +38,17 @@ type Api struct {
 	messageStore        *store.MessageStore
 	imageCache          *cache.ImageCache
 	us                  *socket.UnixSocket
+	waContainer         *sqlstore.Container
+	eventHandlerID      uint32
+	eventHandlerSet     bool
+	startupErr          error
+	loginCancel         context.CancelFunc
+	lifecycleMu         sync.Mutex
+	loginMu             sync.Mutex
+	eventMu             sync.RWMutex
+	taskMu              sync.Mutex
+	backgroundTasks     sync.WaitGroup
+	shuttingDown        bool
 	windowFocused       atomic.Bool
 	groupRepairInFlight atomic.Bool
 	appStateResync      atomic.Bool
@@ -148,13 +161,104 @@ func New() *Api {
 	return &Api{}
 }
 
+func (a *Api) startBackground(task func()) bool {
+	a.taskMu.Lock()
+	defer a.taskMu.Unlock()
+	if a.shuttingDown {
+		return false
+	}
+	a.backgroundTasks.Add(1)
+	go func() {
+		defer a.backgroundTasks.Done()
+		task()
+	}()
+	return true
+}
+
+func (a *Api) isShuttingDown() bool {
+	a.taskMu.Lock()
+	defer a.taskMu.Unlock()
+	return a.shuttingDown
+}
+
 func (a *Api) OnSecondInstanceLaunch(secondInstanceData options.SecondInstanceData) {
 	runtime.WindowUnminimise(a.ctx)
 	runtime.Show(a.ctx)
 }
 
 func (a *Api) Shutdown(ctx context.Context) {
-	_ = a.us.SendCommand("shutdown")
+	a.taskMu.Lock()
+	a.shuttingDown = true
+	a.taskMu.Unlock()
+
+	a.lifecycleMu.Lock()
+	client := a.waClient
+	loginCancel := a.loginCancel
+	if client != nil && a.eventHandlerSet {
+		client.RemoveEventHandler(a.eventHandlerID)
+		a.eventHandlerSet = false
+	}
+	a.lifecycleMu.Unlock()
+
+	if loginCancel != nil {
+		loginCancel()
+	}
+	if client != nil {
+		client.Disconnect()
+	}
+	// Login may be waiting on the QR channel or finishing Connect. Cancellation
+	// releases the QR wait; the second disconnect catches a Connect that raced
+	// with shutdown after the first disconnect.
+	a.loginMu.Lock()
+	a.loginMu.Unlock()
+	if client != nil {
+		client.Disconnect()
+	}
+	// Wait for an event that entered before RemoveEventHandler and every
+	// background task it launched before closing their stores.
+	a.eventMu.Lock()
+	a.eventMu.Unlock()
+	a.backgroundTasks.Wait()
+
+	if err := a.closeResources(); err != nil {
+		log.Println("shutdown cleanup failed:", err)
+	}
+}
+
+func (a *Api) closeResources() error {
+	var closeErr error
+	if a.us != nil {
+		_ = a.us.SendCommand("shutdown")
+		closeErr = errors.Join(closeErr, a.us.Close())
+		a.us = nil
+	}
+	if a.messageStore != nil {
+		closeErr = errors.Join(closeErr, a.messageStore.Close())
+		a.messageStore = nil
+	}
+	if a.imageCache != nil {
+		closeErr = errors.Join(closeErr, a.imageCache.Close())
+		a.imageCache = nil
+	}
+	if a.cw != nil {
+		closeErr = errors.Join(closeErr, a.cw.Close())
+		a.cw = nil
+	}
+	if a.waContainer != nil {
+		closeErr = errors.Join(closeErr, a.waContainer.Close())
+		a.waContainer = nil
+	}
+	return closeErr
+}
+
+func (a *Api) failStartup(err error) {
+	a.lifecycleMu.Lock()
+	a.startupErr = err
+	a.lifecycleMu.Unlock()
+	log.Println("startup failed:", err)
+	if closeErr := a.closeResources(); closeErr != nil {
+		log.Println("startup cleanup failed:", closeErr)
+	}
 }
 
 // startup is called when the app starts. The context is saved
@@ -169,11 +273,13 @@ func (a *Api) Startup(ctx context.Context) {
 	var err error
 	a.us, err = socket.NewUnixSocket(ctx)
 	if err != nil {
-		panic(err)
+		a.failStartup(fmt.Errorf("create tray socket: %w", err))
+		return
 	}
 	a.us.SetCommandHandler(a.trayCommandHandler)
+	socketServer := a.us
 	go func() {
-		err := a.us.ListenAndServe()
+		err := socketServer.ListenAndServe()
 		if err != nil {
 			log.Println("Unix socket server error:", err)
 		}
@@ -187,56 +293,116 @@ func (a *Api) Startup(ctx context.Context) {
 	dbLog := waLog.Stdout("Database", settings.GetLogLevel(), true)
 	a.cw, err = wa.NewAppDatabase(ctx)
 	if err != nil {
-		panic(err)
+		a.failStartup(fmt.Errorf("open application database: %w", err))
+		return
 	}
 	db, err := sql.Open("sqlite3", misc.GetSQLiteAddress("session.wa"))
 	if err != nil {
-		panic(err)
+		a.failStartup(fmt.Errorf("open WhatsApp session database: %w", err))
+		return
 	}
 	container := sqlstore.NewWithDB(db, "sqlite3", dbLog)
+	a.waContainer = container
 	err = container.Upgrade(ctx)
 	if err != nil {
-		panic(err)
+		a.failStartup(fmt.Errorf("upgrade WhatsApp session database: %w", err))
+		return
 	}
 	a.waClient = wa.NewClient(ctx, container)
 	a.messageStore, err = store.NewMessageStore()
 	if err != nil {
-		panic(err)
+		a.failStartup(fmt.Errorf("open message store: %w", err))
+		return
 	}
 	a.imageCache, err = cache.NewImageCache()
 	if err != nil {
-		panic(err)
+		a.failStartup(fmt.Errorf("open image cache: %w", err))
+		return
 	}
 }
 
 func (a *Api) Login() error {
-	var err error
-	a.waClient.AddEventHandler(a.mainEventHandler)
-	if a.waClient.Store.ID == nil {
-		qrChan, _ := a.waClient.GetQRChannel(a.ctx)
-		err = a.waClient.Connect()
+	a.loginMu.Lock()
+	defer a.loginMu.Unlock()
+
+	if a.isShuttingDown() {
+		return context.Canceled
+	}
+	a.lifecycleMu.Lock()
+	if a.startupErr != nil {
+		err := a.startupErr
+		a.lifecycleMu.Unlock()
+		return err
+	}
+	if a.waClient == nil {
+		a.lifecycleMu.Unlock()
+		return errors.New("WhatsApp client is not ready")
+	}
+	if !a.eventHandlerSet {
+		a.eventHandlerID = a.waClient.AddEventHandler(a.mainEventHandler)
+		a.eventHandlerSet = true
+	}
+	client := a.waClient
+	a.lifecycleMu.Unlock()
+
+	if client.Store.ID == nil {
+		loginCtx, cancel := context.WithCancel(a.ctx)
+		a.lifecycleMu.Lock()
+		a.loginCancel = cancel
+		a.lifecycleMu.Unlock()
+		defer func() {
+			cancel()
+			a.lifecycleMu.Lock()
+			a.loginCancel = nil
+			a.lifecycleMu.Unlock()
+		}()
+
+		qrChan, err := client.GetQRChannel(loginCtx)
+		if err != nil {
+			return fmt.Errorf("create QR login channel: %w", err)
+		}
+		if a.isShuttingDown() {
+			return context.Canceled
+		}
+		err = client.Connect()
 		if err != nil {
 			return err
 		}
-		for evt := range qrChan {
-			if evt.Event == "code" {
-				runtime.EventsEmit(a.ctx, "wa:qr", evt.Code)
-			} else {
-				runtime.EventsEmit(a.ctx, "wa:status", evt.Event)
+		for {
+			select {
+			case <-loginCtx.Done():
+				return loginCtx.Err()
+			case evt, ok := <-qrChan:
+				if !ok {
+					return nil
+				}
+				if evt.Event == "code" {
+					runtime.EventsEmit(a.ctx, "wa:qr", evt.Code)
+				} else {
+					runtime.EventsEmit(a.ctx, "wa:status", evt.Event)
+				}
 			}
 		}
 	} else {
-		runtime.EventsEmit(a.ctx, "wa:status", "logged_in")
-		// Already logged in, just connect
-		err = a.waClient.Connect()
+		// Already logged in, connect before announcing readiness.
+		err := client.Connect()
 		if err != nil {
 			return err
 		}
+		if a.isShuttingDown() {
+			return context.Canceled
+		}
+		runtime.EventsEmit(a.ctx, "wa:status", "logged_in")
 	}
 	return nil
 }
 
 func (a *Api) mainEventHandler(evt any) {
+	a.eventMu.RLock()
+	defer a.eventMu.RUnlock()
+	if a.isShuttingDown() {
+		return
+	}
 	switch v := evt.(type) {
 	case *events.Message:
 		parsedHTML := a.processMessageText(v.Message)
@@ -275,11 +441,11 @@ func (a *Api) mainEventHandler(evt any) {
 		isFeed := v.Info.Chat.Server == types.NewsletterServer || v.Info.Chat.Server == types.BroadcastServer
 		if messageID != "" && !v.Info.IsFromMe && !isFeed && v.Message.GetReactionMessage() == nil && !a.windowFocused.Load() &&
 			store.GetNotificationsEnabled() && !a.messageStore.IsChatMuted(v.Info.Chat.String()) {
-			go a.notifyIncoming(v, parsedHTML)
+			a.startBackground(func() { a.notifyIncoming(v, parsedHTML) })
 		}
 
 		if reaction := v.Message.GetReactionMessage(); reaction != nil {
-			go func() {
+			a.startBackground(func() {
 				targetID := reaction.GetKey().GetID()
 				targetMsg, err := a.messageStore.GetMessageWithMedia(v.Info.Chat.String(), targetID)
 				if err != nil {
@@ -304,11 +470,11 @@ func (a *Api) mainEventHandler(evt any) {
 					"timestamp":   v.Info.Timestamp.Unix(),
 					"sender":      senderName,
 				})
-			}()
+			})
 		}
 
 		// Automatically cache images and stickers when they arrive
-		go func() {
+		a.startBackground(func() {
 			if v.Message.GetImageMessage() != nil || v.Message.GetStickerMessage() != nil {
 				var data []byte
 				var err error
@@ -344,10 +510,10 @@ func (a *Api) mainEventHandler(evt any) {
 					}
 				}
 			}
-		}()
+		})
 
 	case *events.Picture:
-		go a.GetCachedAvatar(v.JID.String(), true)
+		a.startBackground(func() { _, _ = a.GetCachedAvatar(v.JID.String(), true) })
 
 		runtime.EventsEmit(a.ctx, "wa:picture_update", v.JID.String())
 
@@ -365,13 +531,17 @@ func (a *Api) mainEventHandler(evt any) {
 		// in (which is the reason why the groups fetch fails and there are no
 		// groups in the app until a manual reinitialize is done). To avoid that,
 		// wait here until logged in.
-		a.cw.Initialise(a.waClient)
+		if err := a.cw.Initialise(a.waClient); err != nil {
+			log.Println("group database initialization failed:", err)
+		}
 		// Heal group rows with missing/empty names in the background now
 		// that the client can reach the server.
-		go a.repairGroupNames()
+		a.startBackground(a.repairGroupNames)
 		// Recover archive/pin/mute sync if the local app state is corrupted.
-		go a.resyncAppState()
-		a.waClient.SendPresence(a.ctx, types.PresenceAvailable)
+		a.startBackground(a.resyncAppState)
+		if err := a.waClient.SendPresence(a.ctx, types.PresenceAvailable); err != nil {
+			log.Println("failed to send available presence:", err)
+		}
 		// Run migration for messages.db
 		err := a.messageStore.MigrateLIDToPN(a.ctx, a.waClient.Store.LIDs)
 		if err != nil {

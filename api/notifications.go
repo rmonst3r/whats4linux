@@ -87,7 +87,7 @@ func (a *Api) ToggleChatMute(chatJID string, muted bool) error {
 	// Duration 0 with muted=true means "muted forever" (see appstate.BuildMute).
 	if err := a.waClient.SendAppState(a.ctx, appstate.BuildMute(jid, muted, 0)); err != nil {
 		log.Println("ToggleChatMute: app state sync failed (kept local):", err)
-		go a.resyncAppState()
+		a.startBackground(a.resyncAppState)
 	}
 	return nil
 }

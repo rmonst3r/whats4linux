@@ -5,9 +5,11 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	query "github.com/lugvitc/whats4linux/internal/query"
@@ -19,7 +21,11 @@ type ImageCache struct {
 	imagesDir string
 	getStmt   *sql.Stmt // Prepared statement for single image retrieval
 	saveStmt  *sql.Stmt // Prepared statement for saving images
+	mu        sync.Mutex
+	lastEvict time.Time
 }
+
+const maxImageCacheBytes int64 = 512 << 20
 
 type ImageMeta struct {
 	MessageID string
@@ -77,12 +83,19 @@ func NewImageCache() (*ImageCache, error) {
 		getStmt:   getStmt,
 		saveStmt:  saveStmt,
 	}
+	if err := ic.evictToSize(maxImageCacheBytes); err != nil {
+		log.Println("image cache eviction failed:", err)
+	}
+	ic.lastEvict = time.Now()
 
 	return ic, nil
 }
 
 // SaveImage saves an image to cache and creates an index entry
 func (ic *ImageCache) SaveImage(messageID string, data []byte, mime string, width, height int) (string, error) {
+	ic.mu.Lock()
+	defer ic.mu.Unlock()
+
 	h := sha256.Sum256(data)
 	hashStr := hex.EncodeToString(h[:])
 
@@ -99,8 +112,91 @@ func (ic *ImageCache) SaveImage(messageID string, data []byte, mime string, widt
 	if err != nil {
 		return "", fmt.Errorf("failed to insert image index: %v", err)
 	}
+	if time.Since(ic.lastEvict) >= 5*time.Minute {
+		if err := ic.evictToSizeLocked(maxImageCacheBytes); err != nil {
+			log.Println("image cache eviction failed:", err)
+		}
+		ic.lastEvict = time.Now()
+	}
 
 	return hashStr, nil
+}
+
+type evictionCandidate struct {
+	messageID string
+	sha256    string
+	mime      string
+}
+
+func (ic *ImageCache) evictToSize(maxBytes int64) error {
+	ic.mu.Lock()
+	defer ic.mu.Unlock()
+	return ic.evictToSizeLocked(maxBytes)
+}
+
+func (ic *ImageCache) evictToSizeLocked(maxBytes int64) error {
+	entries, err := os.ReadDir(ic.imagesDir)
+	if err != nil {
+		return err
+	}
+	var total int64
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		info, err := entry.Info()
+		if err == nil {
+			total += info.Size()
+		}
+	}
+	if total <= maxBytes {
+		return nil
+	}
+
+	rows, err := ic.db.Query(`SELECT message_id, sha256, mime FROM image_index ORDER BY created_at ASC`)
+	if err != nil {
+		return err
+	}
+	var candidates []evictionCandidate
+	for rows.Next() {
+		var candidate evictionCandidate
+		if err := rows.Scan(&candidate.messageID, &candidate.sha256, &candidate.mime); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		candidates = append(candidates, candidate)
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+
+	for _, candidate := range candidates {
+		if total <= maxBytes {
+			break
+		}
+		if _, err := ic.db.Exec(query.DeleteImageIndex, candidate.messageID); err != nil {
+			return err
+		}
+		var references int
+		if err := ic.db.QueryRow(
+			`SELECT COUNT(*) FROM image_index WHERE sha256 = ? AND mime = ?`,
+			candidate.sha256,
+			candidate.mime,
+		).Scan(&references); err != nil {
+			return err
+		}
+		if references != 0 {
+			continue
+		}
+		path := filepath.Join(ic.imagesDir, candidate.sha256+mimeToExt(candidate.mime))
+		if info, err := os.Stat(path); err == nil {
+			total -= info.Size()
+		}
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	}
+	return nil
 }
 
 // GetImageByMessageID retrieves image metadata by message ID
@@ -198,26 +294,34 @@ func (ic *ImageCache) SaveAvatar(jid string, data []byte, mime string) (string, 
 
 // DeleteAvatar deletes an avatar image from cache by JID
 func (ic *ImageCache) DeleteAvatar(jid string) error {
-	filename, err := ic.GetAvatarFilePath(jid)
-	if filename == "" {
-		return nil
-	}
-
-	filep := filepath.Join(ic.imagesDir, filename)
-	fmt.Printf("Deleting avatar file: %s\n", filename)
-
-	if err == nil && filep != "" {
-		if errRemove := os.Remove(filep); errRemove != nil && !os.IsNotExist(errRemove) {
-			return fmt.Errorf("failed to delete avatar file: %v", errRemove)
-		}
-	}
+	ic.mu.Lock()
+	defer ic.mu.Unlock()
 
 	avatarKey := "avatar_" + jid
-	_, err = ic.db.Exec(query.DeleteImageIndex, avatarKey)
-	if err != nil {
+	meta, err := ic.GetImageByMessageID(avatarKey)
+	if err != nil || meta == nil {
+		return err
+	}
+	if _, err = ic.db.Exec(query.DeleteImageIndex, avatarKey); err != nil {
 		return fmt.Errorf("failed to delete avatar index: %v", err)
 	}
 
+	var references int
+	if err := ic.db.QueryRow(
+		`SELECT COUNT(*) FROM image_index WHERE sha256 = ? AND mime = ?`,
+		meta.SHA256,
+		meta.Mime,
+	).Scan(&references); err != nil {
+		return err
+	}
+	if references != 0 {
+		return nil
+	}
+
+	filePath := filepath.Join(ic.imagesDir, meta.SHA256+mimeToExt(meta.Mime))
+	if err := os.Remove(filePath); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("failed to delete avatar file: %v", err)
+	}
 	return nil
 }
 

@@ -3,8 +3,10 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"log"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/lugvitc/whats4linux/internal/misc"
@@ -105,6 +107,11 @@ type ContextInfo struct {
 
 type writeJob func(*sql.Tx) error
 
+type writeRequest struct {
+	job  writeJob
+	done chan error
+}
+
 type MessageStore struct {
 	db *sql.DB
 
@@ -117,7 +124,10 @@ type MessageStore struct {
 	stmtUpdateMessage *sql.Stmt
 	stmtUpdateMedia   *sql.Stmt
 
-	writeCh chan writeJob
+	writeMu    sync.RWMutex
+	writeCh    chan writeRequest
+	writerDone chan struct{}
+	closed     bool
 }
 
 func NewMessageStore() (*MessageStore, error) {
@@ -130,7 +140,8 @@ func NewMessageStore() (*MessageStore, error) {
 		db:            db,
 		chatListMap:   misc.NewVMap[string, ChatMessage](),
 		reactionCache: misc.NewNMap[string, string, []string](),
-		writeCh:       make(chan writeJob, 100),
+		writeCh:       make(chan writeRequest, 100),
+		writerDone:    make(chan struct{}),
 	}
 
 	go ms.runWriter()
@@ -192,30 +203,26 @@ func NewMessageStore() (*MessageStore, error) {
 	})
 
 	if err != nil {
-		db.Close()
+		_ = ms.Close()
 		return nil, err
 	}
 
-	err = ms.runSync(func(tx *sql.Tx) error {
-		var err error
-		ms.stmtInsertMessage, err = tx.Prepare(query.InsertMessage)
-		if err != nil {
-			return err
-		}
-		ms.stmtInsertMedia, err = tx.Prepare(query.InsertMessageMedia)
-		if err != nil {
-			return err
-		}
-		ms.stmtUpdateMessage, err = tx.Prepare(query.UpdateMessage)
-		if err != nil {
-			return err
-		}
-		ms.stmtUpdateMedia, err = tx.Prepare(query.UpdateMessageMediaByMessageID)
-		return err
-	})
+	// These statements outlive individual write transactions, so prepare them
+	// on the database rather than on a transaction (transaction statements are
+	// closed on commit and would be re-prepared for every write).
+	ms.stmtInsertMessage, err = db.Prepare(query.InsertMessage)
+	if err == nil {
+		ms.stmtInsertMedia, err = db.Prepare(query.InsertMessageMedia)
+	}
+	if err == nil {
+		ms.stmtUpdateMessage, err = db.Prepare(query.UpdateMessage)
+	}
+	if err == nil {
+		ms.stmtUpdateMedia, err = db.Prepare(query.UpdateMessageMediaByMessageID)
+	}
 
 	if err != nil {
-		db.Close()
+		_ = ms.Close()
 		return nil, err
 	}
 
@@ -223,31 +230,72 @@ func NewMessageStore() (*MessageStore, error) {
 }
 
 func (ms *MessageStore) runWriter() {
-	for job := range ms.writeCh {
-		tx, err := ms.db.Begin()
-		if err != nil {
-			continue
+	defer close(ms.writerDone)
+	for req := range ms.writeCh {
+		tx, err := ms.db.BeginTx(context.Background(), nil)
+		if err == nil {
+			err = req.job(tx)
+			if err != nil {
+				if rollbackErr := tx.Rollback(); rollbackErr != nil {
+					err = errors.Join(err, rollbackErr)
+				}
+			} else {
+				err = tx.Commit()
+			}
 		}
 
-		if err := job(tx); err != nil {
-			tx.Rollback()
-			continue
+		if req.done != nil {
+			req.done <- err
+			close(req.done)
+		} else if err != nil {
+			log.Println("asynchronous message-store write failed:", err)
 		}
-
-		tx.Commit()
 	}
 }
 
 func (ms *MessageStore) runSync(job writeJob) error {
 	done := make(chan error, 1)
-
-	ms.writeCh <- func(tx *sql.Tx) error {
-		err := job(tx)
-		done <- err
+	if err := ms.enqueueWrite(writeRequest{job: job, done: done}); err != nil {
 		return err
 	}
-
 	return <-done
+}
+
+func (ms *MessageStore) enqueueWrite(req writeRequest) error {
+	ms.writeMu.RLock()
+	defer ms.writeMu.RUnlock()
+	if ms.closed {
+		return errors.New("message store is closed")
+	}
+	ms.writeCh <- req
+	return nil
+}
+
+// Close drains committed writes, closes prepared statements, and then closes
+// the database. Callers must stop the WhatsApp event source before calling it.
+func (ms *MessageStore) Close() error {
+	ms.writeMu.Lock()
+	if ms.closed {
+		ms.writeMu.Unlock()
+		return nil
+	}
+	ms.closed = true
+	close(ms.writeCh)
+	ms.writeMu.Unlock()
+	<-ms.writerDone
+
+	var closeErr error
+	for _, stmt := range []*sql.Stmt{
+		ms.stmtInsertMessage,
+		ms.stmtInsertMedia,
+		ms.stmtUpdateMessage,
+		ms.stmtUpdateMedia,
+	} {
+		if stmt != nil {
+			closeErr = errors.Join(closeErr, stmt.Close())
+		}
+	}
+	return errors.Join(closeErr, ms.db.Close())
 }
 
 // openDB opens a connection to messages.db
@@ -438,13 +486,16 @@ func (ms *MessageStore) migrateChatlist(ctx context.Context, sd store.LIDStore, 
 	// migrate all messages from this lid to pn
 	// hack: we won't update the msginfo, just update chat marker in messages for now
 	// complete the migrate on next restart when chat != msginfo.chat
-	ms.writeCh <- func(tx *sql.Tx) error {
+	if err := ms.runSync(func(tx *sql.Tx) error {
 		_, err := tx.Exec(
 			query.UpdateMessagesChat,
 			chat.String(),
 			lid.String(),
 		)
 		return err
+	}); err != nil {
+		log.Printf("Failed to migrate messages.chat marker from LID %s to PN %s: %v\n", lid.String(), chat.String(), err)
+		return
 	}
 	log.Printf("Migrated messages.chat marker from LID %s to PN %s\n", lid.String(), chat.String())
 
@@ -1188,15 +1239,38 @@ func extractMessageContent(msg *waE2E.Message) (text, fileName, replyToMessageID
 	return
 }
 
-// GetDecodedMessagesPaged returns a page of decoded messages from messages.db
-func (ms *MessageStore) GetDecodedMessagesPaged(chatJID string, beforeTimestamp int64, limit int) ([]DecodedMessage, error) {
+type decodedPageRow struct {
+	message  DecodedMessage
+	text     string
+	fileName string
+	width    int
+	height   int
+	gif      bool
+}
+
+type quotedContent struct {
+	sender  string
+	content *DecodedMessageContent
+}
+
+// GetDecodedMessagesPaged returns a stable page of decoded messages. The
+// timestamp and message ID form a compound cursor, so messages that share the
+// same second cannot fall between pages.
+func (ms *MessageStore) GetDecodedMessagesPaged(chatJID string, beforeTimestamp int64, beforeMessageID string, limit int) ([]DecodedMessage, error) {
 	var rows *sql.Rows
 	var err error
 
 	if beforeTimestamp == 0 {
 		rows, err = ms.db.Query(query.SelectLatestMessagesByChat, chatJID, limit)
 	} else {
-		rows, err = ms.db.Query(query.SelectMessagesByChatBeforeTimestamp, chatJID, beforeTimestamp, limit)
+		rows, err = ms.db.Query(
+			query.SelectMessagesByChatBeforeCursor,
+			chatJID,
+			beforeTimestamp,
+			beforeTimestamp,
+			beforeMessageID,
+			limit,
+		)
 	}
 
 	if err != nil {
@@ -1204,13 +1278,13 @@ func (ms *MessageStore) GetDecodedMessagesPaged(chatJID string, beforeTimestamp 
 	}
 	defer rows.Close()
 
-	var messages []DecodedMessage
+	page := make([]decodedPageRow, 0, limit)
 
 	for rows.Next() {
 		var (
-			msgId             string
-			chatJid           string
-			senderJid         string
+			msgID             string
+			chatJIDRow        string
+			senderJID         string
 			timestamp         int64
 			isFromMe          bool
 			text              sql.NullString
@@ -1218,12 +1292,14 @@ func (ms *MessageStore) GetDecodedMessagesPaged(chatJID string, beforeTimestamp 
 			edited, forwarded bool
 			msgType           sql.NullInt32
 			fileName          sql.NullString
+			width, height     sql.NullInt64
+			gif               sql.NullBool
 		)
 
 		err := rows.Scan(
-			&msgId,
-			&chatJid,
-			&senderJid,
+			&msgID,
+			&chatJIDRow,
+			&senderJID,
 			&timestamp,
 			&isFromMe,
 			&text,
@@ -1232,40 +1308,155 @@ func (ms *MessageStore) GetDecodedMessagesPaged(chatJID string, beforeTimestamp 
 			&forwarded,
 			&msgType,
 			&fileName,
+			&width,
+			&height,
+			&gif,
 		)
 		if err != nil {
-			log.Println("Failed to scan decoded message:", err)
-			continue
+			return nil, err
 		}
 
-		msg := DecodedMessage{
-			Type:             mtypes.MediaType(msgType.Int32),
-			ReplyToMessageID: replyTo.String,
-			Edited:           edited,
-			Forwarded:        forwarded,
-			Info: DecodedMessageInfo{
-				ID:        msgId,
-				Timestamp: time.Unix(timestamp, 0).Format(time.RFC3339),
-				IsFromMe:  isFromMe,
-				PushName:  "",
-				Sender:    senderJid,
-				Chat:      chatJid,
+		page = append(page, decodedPageRow{
+			message: DecodedMessage{
+				Type:             mtypes.MediaType(msgType.Int32),
+				ReplyToMessageID: replyTo.String,
+				Edited:           edited,
+				Forwarded:        forwarded,
+				Info: DecodedMessageInfo{
+					ID:        msgID,
+					Timestamp: time.Unix(timestamp, 0).Format(time.RFC3339),
+					IsFromMe:  isFromMe,
+					PushName:  "",
+					Sender:    senderJID,
+					Chat:      chatJIDRow,
+				},
 			},
+			text:     text.String,
+			fileName: fileName.String,
+			width:    int(width.Int64),
+			height:   int(height.Int64),
+			gif:      gif.Bool,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	messageIDs := make([]string, 0, len(page))
+	quotedIDs := make([]string, 0, len(page))
+	for i := range page {
+		messageIDs = append(messageIDs, page[i].message.Info.ID)
+		if page[i].message.ReplyToMessageID != "" {
+			quotedIDs = append(quotedIDs, page[i].message.ReplyToMessageID)
 		}
+	}
 
-		// Load reactions for this message
-		reactions, err := ms.GetReactionsByMessageID(msgId)
-		if err == nil {
-			msg.Reactions = reactions
+	reactions, err := ms.loadReactionsByMessageIDs(messageIDs)
+	if err != nil {
+		return nil, err
+	}
+	quoted, err := ms.loadQuotedContents(quotedIDs)
+	if err != nil {
+		return nil, err
+	}
+
+	messages := make([]DecodedMessage, 0, len(page))
+	for i := range page {
+		item := &page[i]
+		item.message.Reactions = reactions[item.message.Info.ID]
+
+		var contextInfo *ContextInfo
+		if replyID := item.message.ReplyToMessageID; replyID != "" {
+			contextInfo = &ContextInfo{StanzaID: replyID}
+			if quote, ok := quoted[replyID]; ok {
+				contextInfo.Participant = quote.sender
+				contextInfo.QuotedMessage = quote.content
+			}
 		}
-
-		// Populate Content for frontend rendering
-		msg.Content = ms.buildDecodedContent(chatJID, msgId, text.String, msg.ReplyToMessageID, fileName.String, msg.Type)
-
-		messages = append(messages, msg)
+		item.message.Content = buildDecodedContentValues(
+			item.text,
+			item.fileName,
+			item.message.Type,
+			item.width,
+			item.height,
+			item.gif,
+			contextInfo,
+		)
+		messages = append(messages, item.message)
 	}
 
 	return messages, nil
+}
+
+func placeholders(ids []string) (string, []any) {
+	marks := make([]string, len(ids))
+	args := make([]any, len(ids))
+	for i, id := range ids {
+		marks[i] = "?"
+		args[i] = id
+	}
+	return strings.Join(marks, ","), args
+}
+
+func (ms *MessageStore) loadReactionsByMessageIDs(messageIDs []string) (map[string][]Reaction, error) {
+	result := make(map[string][]Reaction, len(messageIDs))
+	if len(messageIDs) == 0 {
+		return result, nil
+	}
+	marks, args := placeholders(messageIDs)
+	rows, err := ms.db.Query(query.SelectReactionsByMessageIDsPrefix+marks+") ORDER BY id ASC", args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var reaction Reaction
+		if err := rows.Scan(&reaction.ID, &reaction.MessageID, &reaction.SenderID, &reaction.Emoji); err != nil {
+			return nil, err
+		}
+		result[reaction.MessageID] = append(result[reaction.MessageID], reaction)
+	}
+	return result, rows.Err()
+}
+
+func (ms *MessageStore) loadQuotedContents(messageIDs []string) (map[string]quotedContent, error) {
+	result := make(map[string]quotedContent, len(messageIDs))
+	if len(messageIDs) == 0 {
+		return result, nil
+	}
+	marks, args := placeholders(messageIDs)
+	rows, err := ms.db.Query(query.SelectDecodedMessagesByIDPrefix+marks+")", args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var (
+			messageID     string
+			sender        string
+			text          sql.NullString
+			msgType       sql.NullInt32
+			fileName      sql.NullString
+			width, height sql.NullInt64
+			gif           sql.NullBool
+		)
+		if err := rows.Scan(&messageID, &sender, &text, &msgType, &fileName, &width, &height, &gif); err != nil {
+			return nil, err
+		}
+		result[messageID] = quotedContent{
+			sender: sender,
+			content: buildDecodedContentValues(
+				text.String,
+				fileName.String,
+				mtypes.MediaType(msgType.Int32),
+				int(width.Int64),
+				int(height.Int64),
+				gif.Bool,
+				nil,
+			),
+		}
+	}
+	return result, rows.Err()
 }
 
 // buildDecodedContent creates a DecodedMessageContent from DecodedMessage fields
@@ -1273,26 +1464,28 @@ func (ms *MessageStore) buildDecodedContent(
 	chatJID, messageID, text, replyToMessageId, fileName string,
 	mediaType mtypes.MediaType,
 ) *DecodedMessageContent {
-	content := &DecodedMessageContent{}
-
-	// Build context info if there's a reply
 	var contextInfo *ContextInfo
 	if replyToMessageId != "" {
-		// Fetch the quoted message, but don't recursively load its content to avoid race conditions
-
-		quotedMsg, err := ms.GetDecodedMessage(chatJID, replyToMessageId)
-		if err == nil && quotedMsg != nil {
-			contextInfo = &ContextInfo{
-				StanzaID:      replyToMessageId,
-				Participant:   quotedMsg.Info.Sender,
-				QuotedMessage: quotedMsg.Content,
-			}
-		} else {
-			contextInfo = &ContextInfo{
-				StanzaID: replyToMessageId,
+		contextInfo = &ContextInfo{StanzaID: replyToMessageId}
+		if quoted, err := ms.loadQuotedContents([]string{replyToMessageId}); err == nil {
+			if quote, ok := quoted[replyToMessageId]; ok {
+				contextInfo.Participant = quote.sender
+				contextInfo.QuotedMessage = quote.content
 			}
 		}
 	}
+	width, height := ms.mediaDimensions(messageID)
+	return buildDecodedContentValues(text, fileName, mediaType, width, height, ms.isGifPlayback(messageID), contextInfo)
+}
+
+func buildDecodedContentValues(
+	text, fileName string,
+	mediaType mtypes.MediaType,
+	width, height int,
+	gifPlayback bool,
+	contextInfo *ContextInfo,
+) *DecodedMessageContent {
+	content := &DecodedMessageContent{}
 
 	// Based on message type, populate the appropriate content field
 	switch mtypes.MediaType(mediaType) {
@@ -1306,7 +1499,6 @@ func (ms *MessageStore) buildDecodedContent(
 			content.Conversation = text
 		}
 	case mtypes.MediaTypeImage:
-		width, height := ms.mediaDimensions(messageID)
 		content.ImageMessage = &MediaMessageContent{
 			Caption:     text,
 			Width:       width,
@@ -1314,10 +1506,9 @@ func (ms *MessageStore) buildDecodedContent(
 			ContextInfo: contextInfo,
 		}
 	case mtypes.MediaTypeVideo:
-		width, height := ms.mediaDimensions(messageID)
 		content.VideoMessage = &MediaMessageContent{
 			Caption:     text,
-			GifPlayback: ms.isGifPlayback(messageID),
+			GifPlayback: gifPlayback,
 			Width:       width,
 			Height:      height,
 			ContextInfo: contextInfo,
@@ -1333,7 +1524,6 @@ func (ms *MessageStore) buildDecodedContent(
 			ContextInfo: contextInfo,
 		}
 	case mtypes.MediaTypeSticker:
-		width, height := ms.mediaDimensions(messageID)
 		content.StickerMessage = &MediaMessageContent{
 			Width:       width,
 			Height:      height,
@@ -1441,6 +1631,8 @@ func (ms *MessageStore) GetDecodedMessage(chatJID string, messageID string) (*De
 		text              sql.NullString
 		msgType           sql.NullInt32
 		fileName          sql.NullString
+		width, height     sql.NullInt64
+		gif               sql.NullBool
 	)
 
 	// Use runSync to ensure read consistency with pending writes
@@ -1455,6 +1647,9 @@ func (ms *MessageStore) GetDecodedMessage(chatJID string, messageID string) (*De
 			&forwarded,
 			&msgType,
 			&fileName,
+			&width,
+			&height,
+			&gif,
 		)
 
 		if err != nil {
@@ -1489,8 +1684,25 @@ func (ms *MessageStore) GetDecodedMessage(chatJID string, messageID string) (*De
 		msg.Reactions = reactions
 	}
 
-	// Populate Content for frontend rendering
-	msg.Content = ms.buildDecodedContent(chatJID, messageID, text.String, msg.ReplyToMessageID, fileName.String, msg.Type)
+	var contextInfo *ContextInfo
+	if msg.ReplyToMessageID != "" {
+		contextInfo = &ContextInfo{StanzaID: msg.ReplyToMessageID}
+		if quoted, loadErr := ms.loadQuotedContents([]string{msg.ReplyToMessageID}); loadErr == nil {
+			if quote, ok := quoted[msg.ReplyToMessageID]; ok {
+				contextInfo.Participant = quote.sender
+				contextInfo.QuotedMessage = quote.content
+			}
+		}
+	}
+	msg.Content = buildDecodedContentValues(
+		text.String,
+		fileName.String,
+		msg.Type,
+		int(width.Int64),
+		int(height.Int64),
+		gif.Bool,
+		contextInfo,
+	)
 
 	return &msg, nil
 }
