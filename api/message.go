@@ -27,6 +27,7 @@ type MessageContent struct {
 	FileName        string   `json:"fileName,omitempty"`
 	QuotedMessageID string   `json:"quotedMessageId,omitempty"`
 	Mentions        []string `json:"mentions,omitempty"`
+	ClientTempID    string   `json:"clientTempId,omitempty"`
 }
 
 func (a *Api) processMessageText(msg *waE2E.Message) string {
@@ -525,12 +526,13 @@ func (a *Api) SendMessage(chatJID string, content MessageContent) (string, error
 	}
 
 	runtime.EventsEmit(a.ctx, "wa:new_message", map[string]any{
-		"chatId":      parsedJID.String(),
-		"message":     msg,
-		"messageText": messageText,
-		"parsedHTML":  parsedHTML,
-		"timestamp":   resp.Timestamp.Unix(),
-		"sender":      "You",
+		"chatId":       parsedJID.String(),
+		"message":      msg,
+		"clientTempId": content.ClientTempID,
+		"messageText":  messageText,
+		"parsedHTML":   parsedHTML,
+		"timestamp":    resp.Timestamp.Unix(),
+		"sender":       "You",
 	})
 
 	return resp.ID, nil

@@ -43,9 +43,14 @@ const (
 
 	SelectDecodedMessageByChatAndID = `
 	SELECT m.sender_jid, m.timestamp, m.is_from_me, m.text, m.reply_to_message_id, m.edited, m.forwarded,
-	       mm.type, mm.file_name, mm.width, mm.height, mm.gif_playback
+	       mm.type, mm.file_name, mm.width, mm.height, mm.gif_playback,
+	       lp.url, lp.title, lp.description,
+	       CASE WHEN length(COALESCE(lp.thumbnail, x'')) > 0 OR
+	                      (COALESCE(lp.direct_path, '') <> '' AND length(COALESCE(lp.media_key, x'')) > 0)
+	            THEN 1 ELSE 0 END
 	FROM messages AS m
 	LEFT JOIN message_media AS mm ON mm.message_id = m.message_id
+	LEFT JOIN link_previews AS lp ON lp.message_id = m.message_id
 	WHERE m.chat_jid = ? AND m.message_id = ?
 	LIMIT 1
 	`
@@ -65,7 +70,11 @@ const (
 	// Messages.db paged queries (for frontend)
 	SelectMessagesByChatBeforeCursor = `
 	SELECT m.message_id, m.chat_jid, m.sender_jid, m.timestamp, m.is_from_me, m.text, m.reply_to_message_id, m.edited, m.forwarded,
-	       mm.type, mm.file_name, mm.width, mm.height, mm.gif_playback
+	       mm.type, mm.file_name, mm.width, mm.height, mm.gif_playback,
+	       lp.url, lp.title, lp.description,
+	       CASE WHEN length(COALESCE(lp.thumbnail, x'')) > 0 OR
+	                      (COALESCE(lp.direct_path, '') <> '' AND length(COALESCE(lp.media_key, x'')) > 0)
+	            THEN 1 ELSE 0 END
 	FROM (
 		SELECT message_id, chat_jid, sender_jid, timestamp, is_from_me, text, reply_to_message_id, edited, forwarded
 		FROM messages
@@ -75,12 +84,17 @@ const (
 		LIMIT ?
 	) AS m 
 	LEFT JOIN message_media AS mm ON mm.message_id = m.message_id
+	LEFT JOIN link_previews AS lp ON lp.message_id = m.message_id
 	ORDER BY m.timestamp ASC, m.message_id ASC
 	`
 
 	SelectLatestMessagesByChat = `
 	SELECT m.message_id, m.chat_jid, m.sender_jid, m.timestamp, m.is_from_me, m.text, m.reply_to_message_id, m.edited, m.forwarded,
-	       mm.type, mm.file_name, mm.width, mm.height, mm.gif_playback
+	       mm.type, mm.file_name, mm.width, mm.height, mm.gif_playback,
+	       lp.url, lp.title, lp.description,
+	       CASE WHEN length(COALESCE(lp.thumbnail, x'')) > 0 OR
+	                      (COALESCE(lp.direct_path, '') <> '' AND length(COALESCE(lp.media_key, x'')) > 0)
+	            THEN 1 ELSE 0 END
 	FROM (
 		SELECT message_id, chat_jid, sender_jid, timestamp, is_from_me, text, reply_to_message_id, edited, forwarded
 		FROM messages
@@ -89,6 +103,7 @@ const (
 		LIMIT ?
 	) AS m
 	LEFT JOIN message_media AS mm ON mm.message_id = m.message_id
+	LEFT JOIN link_previews AS lp ON lp.message_id = m.message_id
 	ORDER BY m.timestamp ASC, m.message_id ASC
 	`
 

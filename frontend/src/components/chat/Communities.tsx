@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 import clsx from "clsx"
 import { GetCommunityList, GetCommunityDetails, GetCachedAvatar } from "../../../wailsjs/go/api/Api"
 import { api } from "../../../wailsjs/go/models"
@@ -75,37 +75,52 @@ export function CommunityList({ searchTerm, selectedJid, onSelect }: CommunityLi
   const [communities, setCommunities] = useState<api.CommunitySummary[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const loadGeneration = useRef(0)
 
   const load = useCallback(async () => {
+    const generation = ++loadGeneration.current
     setLoading(true)
     setError(null)
     try {
       const list = (await GetCommunityList()) || []
+      if (generation !== loadGeneration.current) return
       setCommunities(list)
+      setLoading(false)
 
-      // Load avatars in the background (community photos may need a special fetch).
-      for (const c of list) {
-        if (c.avatar_url) continue
-        try {
-          const url = await GetCachedAvatar(c.jid, false)
-          if (url) {
-            setCommunities(prev => prev.map(x => (x.jid === c.jid ? { ...x, avatar_url: url } : x)))
+      // Render the list first, then hydrate avatars with bounded concurrency.
+      const pending = list.filter(c => !c.avatar_url)
+      let next = 0
+      const worker = async () => {
+        while (next < pending.length && generation === loadGeneration.current) {
+          const c = pending[next++]
+          try {
+            const url = await GetCachedAvatar(c.jid, false)
+            if (url && generation === loadGeneration.current) {
+              setCommunities(prev =>
+                prev.map(x => (x.jid === c.jid ? { ...x, avatar_url: url } : x)),
+              )
+            }
+          } catch {
+            /* ignore missing avatars */
           }
-        } catch {
-          /* ignore missing avatars */
         }
       }
+      void Promise.all(Array.from({ length: Math.min(4, pending.length) }, () => worker()))
     } catch (err) {
+      if (generation !== loadGeneration.current) return
       console.error("Failed to load communities:", err)
       setError("Could not load communities")
       setCommunities([])
     } finally {
-      setLoading(false)
+      if (generation === loadGeneration.current) setLoading(false)
     }
   }, [])
 
   useEffect(() => {
-    load()
+    void load()
+    return () => {
+      loadGeneration.current++
+    }
   }, [load])
 
   const filtered = searchTerm
@@ -213,6 +228,40 @@ export function CommunityHome({
         if (!cancelled) {
           setDetails(d)
           setLoading(false)
+
+          const targets = [
+            { kind: "community" as const, jid: communityJid },
+            ...(d.announcement ? [{ kind: "announcement" as const, jid: d.announcement.jid }] : []),
+            ...(d.groups || []).map(group => ({ kind: "group" as const, jid: group.jid })),
+          ]
+          let next = 0
+          const worker = async () => {
+            while (next < targets.length && !cancelled) {
+              const target = targets[next++]
+              try {
+                const url = await GetCachedAvatar(target.jid, false)
+                if (!url || cancelled) continue
+                setDetails(current => {
+                  if (!current) return current
+                  if (target.kind === "community") return { ...current, avatar_url: url }
+                  if (target.kind === "announcement") {
+                    return current.announcement?.jid === target.jid
+                      ? { ...current, announcement: { ...current.announcement, avatar_url: url } }
+                      : current
+                  }
+                  return {
+                    ...current,
+                    groups: current.groups.map(group =>
+                      group.jid === target.jid ? { ...group, avatar_url: url } : group,
+                    ),
+                  }
+                })
+              } catch {
+                /* ignore missing avatars */
+              }
+            }
+          }
+          void Promise.all(Array.from({ length: Math.min(4, targets.length) }, () => worker()))
         }
       } catch (err) {
         console.error("Failed to load community:", err)

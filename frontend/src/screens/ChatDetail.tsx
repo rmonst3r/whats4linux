@@ -74,14 +74,6 @@ export function ChatDetail({ chatId, chatName, chatAvatar, onBack }: ChatDetailP
   const [highlightedMessageId, setHighlightedMessageId] = useState<string | null>(null)
   const [firstItemIndex, setFirstItemIndex] = useState(START_INDEX)
 
-  // Reset the Virtuoso anchor synchronously when switching chats so the fresh
-  // list (see key={chatId} on <MessageList>) starts from a clean base.
-  const anchorChatIdRef = useRef(chatId)
-  if (anchorChatIdRef.current !== chatId) {
-    anchorChatIdRef.current = chatId
-    setFirstItemIndex(START_INDEX)
-  }
-
   const messageListRef = useRef<MessageListHandle>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -90,6 +82,12 @@ export function ChatDetail({ chatId, chatName, chatAvatar, onBack }: ChatDetailP
   const scrollButtonRef = useRef<HTMLButtonElement>(null)
   const sentMediaCache = useRef<Map<string, string>>(new Map())
   const isComposingRef = useRef(false)
+  const requestGenerationRef = useRef(0)
+  const loadingMoreRef = useRef(false)
+  const hasMoreRef = useRef(true)
+  const loadMorePromiseRef = useRef<Promise<store.DecodedMessage[]> | null>(null)
+  const initialLoadPromiseRef = useRef<Promise<void> | null>(null)
+  const highlightTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const easeShowRef = useRef(getEase("DropDown", "open"))
   const easeHideRef = useRef(getEase("DropDown", "close"))
@@ -165,15 +163,6 @@ export function ChatDetail({ chatId, chatName, chatAvatar, onBack }: ChatDetailP
     })
   }, [])
 
-  const handleQuotedClick = useCallback((messageId: string) => {
-    messageListRef.current?.scrollToMessage(messageId)
-    setHighlightedMessageId(messageId)
-
-    setTimeout(() => {
-      setHighlightedMessageId(null)
-    }, 500)
-  }, [])
-
   const handleAtBottomChange = useCallback((atBottom: boolean) => {
     setIsAtBottom(atBottom)
   }, [])
@@ -211,71 +200,150 @@ export function ChatDetail({ chatId, chatName, chatAvatar, onBack }: ChatDetailP
     return () => window.removeEventListener("keydown", onKey)
   }, [chatInfoOpen, showEmojiPicker, replyingTo, onBack, setChatInfoOpen, setShowEmojiPicker])
 
-  const loadInitialMessages = useCallback(async () => {
-    setInitialLoad(true)
-    setIsReady(false)
-    try {
-      const msgs = await FetchMessagesPaged(chatId, PAGE_SIZE, 0, "")
-      const loadedMsgs = msgs || []
+  const loadInitialMessages = useCallback(
+    async (generation: number) => {
+      setInitialLoad(true)
+      setIsReady(false)
+      const beforeRequest = new Map(
+        (useMessageStore.getState().messages[chatId] || []).map(message => [
+          message.Info?.ID,
+          message,
+        ]),
+      )
+      try {
+        const msgs = await FetchMessagesPaged(chatId, PAGE_SIZE, 0, "")
+        if (requestGenerationRef.current !== generation) return
+        const loadedMsgs = msgs || []
 
-      setMessages(chatId, loadedMsgs)
-      setHasMore(loadedMsgs.length >= PAGE_SIZE)
+        // Do not let the initial database snapshot overwrite an optimistic or
+        // live message that arrived while the request was in flight.
+        const current = useMessageStore.getState().messages[chatId] || []
+        const currentByID = new Map(current.map(message => [message.Info?.ID, message]))
+        const loadedIDs = new Set(loadedMsgs.map(message => message.Info?.ID))
+        const merged = loadedMsgs.map(message => {
+          const currentMessage = currentByID.get(message.Info?.ID)
+          return currentMessage && currentMessage !== beforeRequest.get(message.Info?.ID)
+            ? currentMessage
+            : message
+        })
+        for (const message of current) {
+          const id = message.Info?.ID
+          if (id && !loadedIDs.has(id) && (!beforeRequest.has(id) || message.isPending)) {
+            merged.push(message)
+          }
+        }
+        setMessages(chatId, merged)
+        const more = loadedMsgs.length >= PAGE_SIZE
+        hasMoreRef.current = more
+        setHasMore(more)
 
-      requestAnimationFrame(() => {
-        setIsReady(true)
+        requestAnimationFrame(() => {
+          if (requestGenerationRef.current !== generation) return
+          setIsReady(true)
+          setInitialLoad(false)
+        })
+      } catch (err) {
+        if (requestGenerationRef.current !== generation) return
+        console.error("Initial load failed:", err)
         setInitialLoad(false)
-        scrollToBottom(true)
-      })
-    } catch (err) {
-      console.error("Initial load failed:", err)
-      setInitialLoad(false)
-    }
-  }, [chatId, setMessages, scrollToBottom])
+      }
+    },
+    [chatId, setMessages],
+  )
 
-  const loadMoreMessages = useCallback(async () => {
-    if (!hasMore || isLoadingMore) return
+  const loadMoreMessages = useCallback((): Promise<store.DecodedMessage[]> => {
+    if (loadMorePromiseRef.current) return loadMorePromiseRef.current
+    if (!hasMoreRef.current || loadingMoreRef.current) return Promise.resolve([])
 
-    const currentMessages = messages[chatId] || []
-    if (currentMessages.length === 0) return
+    const currentMessages = useMessageStore.getState().messages[chatId] || []
+    if (currentMessages.length === 0) return Promise.resolve([])
 
-    setIsLoadingMore(true)
+    const generation = requestGenerationRef.current
     const oldestMessage = currentMessages[0]
     const beforeTimestamp = Math.floor(new Date(oldestMessage.Info.Timestamp).getTime() / 1000)
+    loadingMoreRef.current = true
+    setIsLoadingMore(true)
 
-    try {
-      const msgs = await FetchMessagesPaged(
-        chatId,
-        PAGE_SIZE,
-        beforeTimestamp,
-        oldestMessage.Info.ID,
-      )
-      if (msgs && msgs.length > 0) {
-        // Decrement the Virtuoso anchor by the number prepended so it keeps the
-        // current scroll position instead of jumping. Virtuoso handles the rest.
-        setFirstItemIndex(prev => prev - msgs.length)
-        prependMessages(chatId, msgs)
-        setHasMore(msgs.length >= PAGE_SIZE)
-      } else {
-        setHasMore(false)
+    const request = (async () => {
+      try {
+        const msgs =
+          (await FetchMessagesPaged(chatId, PAGE_SIZE, beforeTimestamp, oldestMessage.Info.ID)) ||
+          []
+        if (requestGenerationRef.current !== generation) return []
+
+        if (msgs.length > 0) {
+          // Keep firstItemIndex and the prepended data in the same request
+          // generation; a response from an abandoned chat cannot move this list.
+          setFirstItemIndex(prev => prev - msgs.length)
+          prependMessages(chatId, msgs)
+        }
+        const more = msgs.length >= PAGE_SIZE
+        hasMoreRef.current = more
+        setHasMore(more)
+        return msgs
+      } catch (err) {
+        if (requestGenerationRef.current === generation) {
+          console.error("Load more failed:", err)
+        }
+        return []
       }
-    } catch (err) {
-      console.error("Load more failed:", err)
-    } finally {
-      setIsLoadingMore(false)
-    }
-  }, [chatId, hasMore, isLoadingMore, messages, prependMessages])
+    })()
+
+    loadMorePromiseRef.current = request
+    void request.finally(() => {
+      if (loadMorePromiseRef.current === request) loadMorePromiseRef.current = null
+      if (requestGenerationRef.current === generation) {
+        loadingMoreRef.current = false
+        setIsLoadingMore(false)
+      }
+    })
+    return request
+  }, [chatId, prependMessages])
+
+  const handleQuotedClick = useCallback(
+    async (messageId: string) => {
+      const generation = requestGenerationRef.current
+      if (initialLoadPromiseRef.current) await initialLoadPromiseRef.current
+      if (requestGenerationRef.current !== generation) return
+      let found = useMessageStore
+        .getState()
+        .messages[chatId]?.some(message => message.Info?.ID === messageId)
+
+      // Pins and replies can point beyond the initial page. Load contiguous
+      // older pages until the target is present or history is exhausted.
+      while (!found && hasMoreRef.current && requestGenerationRef.current === generation) {
+        const page = await loadMoreMessages()
+        if (requestGenerationRef.current !== generation || page.length === 0) return
+        found = page.some(message => message.Info?.ID === messageId)
+      }
+      if (!found || requestGenerationRef.current !== generation) return
+
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          if (requestGenerationRef.current !== generation) return
+          if (!messageListRef.current?.scrollToMessage(messageId)) return
+          setHighlightedMessageId(messageId)
+          if (highlightTimerRef.current) clearTimeout(highlightTimerRef.current)
+          highlightTimerRef.current = setTimeout(() => {
+            setHighlightedMessageId(null)
+            highlightTimerRef.current = null
+          }, 500)
+        })
+      })
+    },
+    [chatId, loadMoreMessages],
+  )
 
   useEffect(() => {
     if (isAtBottom) {
-      const currentMessages = messages[chatId] || []
-      const messageIds = currentMessages.map((m: any) => m?.Info?.ID).filter((id: any) => !!id)
+      const messageIds = chatMessages.map((m: any) => m?.Info?.ID).filter((id: any) => !!id)
       if (messageIds.length > 0) {
         MarkRead(chatId, messageIds, "read-msg").catch(err => {
           console.error("Failed to mark messages as read:", err)
         })
       }
     }
-  }, [isAtBottom, chatId])
+  }, [isAtBottom, chatId, chatMessages])
 
   const handleInputChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     const newValue = e.target.value
@@ -343,20 +411,31 @@ export function ChatDetail({ chatId, chatName, chatAvatar, onBack }: ChatDetailP
         imageMessage: {
           caption: textToSend || "",
           mimetype: "image/png",
+          _tempImage: imageToSend,
         },
       }
     } else if (fileToSend) {
-      if (fileTypeToSend === "video") {
+      if (fileTypeToSend === "image") {
+        pendingMessage.Content = {
+          imageMessage: {
+            caption: textToSend || "",
+            mimetype: fileToSend.type,
+            _tempFile: fileToSend,
+          },
+        }
+      } else if (fileTypeToSend === "video") {
         pendingMessage.Content = {
           videoMessage: {
             caption: textToSend || "",
             mimetype: fileToSend.type,
+            _tempFile: fileToSend,
           },
         }
       } else if (fileTypeToSend === "audio") {
         pendingMessage.Content = {
           audioMessage: {
             mimetype: fileToSend.type,
+            _tempFile: fileToSend,
           },
         }
       } else {
@@ -411,10 +490,9 @@ export function ChatDetail({ chatId, chatName, chatAvatar, onBack }: ChatDetailP
     setReplyingTo(null)
     setSelectedMentions([])
 
-    // Scroll to bottom to show the new message
-    requestAnimationFrame(() => {
-      scrollToBottom(false)
-    })
+    // Virtuoso follows appended messages when already at the bottom. When the
+    // sender is reading older history, explicitly take them to their new post.
+    if (!isAtBottom) scrollToBottom(false)
 
     let processedText = textToSend
     const mentionsToSend: string[] = []
@@ -457,6 +535,7 @@ export function ChatDetail({ chatId, chatName, chatAvatar, onBack }: ChatDetailP
         const mimetype = imageToSend.match(/^data:([^;,]+)/)?.[1] || "image/png"
         await SendMessage(chatId, {
           type: "image",
+          clientTempId: tempId,
           base64Data: base64,
           mimetype,
           text: processedText,
@@ -468,6 +547,7 @@ export function ChatDetail({ chatId, chatName, chatAvatar, onBack }: ChatDetailP
         const base64 = dataURL.split(",")[1]
         await SendMessage(chatId, {
           type: fileTypeToSend,
+          clientTempId: tempId,
           base64Data: base64,
           mimetype: fileToSend.type || "application/octet-stream",
           fileName: fileToSend.name,
@@ -478,6 +558,7 @@ export function ChatDetail({ chatId, chatName, chatAvatar, onBack }: ChatDetailP
       } else {
         await SendMessage(chatId, {
           type: "text",
+          clientTempId: tempId,
           text: processedText,
           quotedMessageId,
           mentions: mentionsToSend,
@@ -490,42 +571,69 @@ export function ChatDetail({ chatId, chatName, chatAvatar, onBack }: ChatDetailP
   }
 
   useEffect(() => {
+    const generation = ++requestGenerationRef.current
+    loadingMoreRef.current = false
+    loadMorePromiseRef.current = null
+    hasMoreRef.current = true
+    setFirstItemIndex(START_INDEX)
+    setHasMore(true)
+    setIsLoadingMore(false)
+    setIsAtBottom(true)
     setActiveChatId(chatId)
-    loadInitialMessages()
+    const initialRequest = loadInitialMessages(generation)
+    initialLoadPromiseRef.current = initialRequest
+    void initialRequest.finally(() => {
+      if (initialLoadPromiseRef.current === initialRequest) initialLoadPromiseRef.current = null
+    })
+    return () => {
+      if (requestGenerationRef.current === generation) requestGenerationRef.current++
+      loadingMoreRef.current = false
+      loadMorePromiseRef.current = null
+      initialLoadPromiseRef.current = null
+      if (highlightTimerRef.current) {
+        clearTimeout(highlightTimerRef.current)
+        highlightTimerRef.current = null
+      }
+    }
   }, [chatId, loadInitialMessages, setActiveChatId])
 
   useEffect(() => {
     // New messages from events still use the old Message format for real-time updates
     // They will be compatible due to the Info and Content structure
-    const unsub = EventsOn("wa:new_message", (data: { chatId: string; message: any }) => {
-      if (data?.chatId === chatId) {
-        // Use getState to avoid depending on messages array and causing re-subscriptions
-        const currentMessages = useMessageStore.getState().messages[chatId] || []
-        const hasPendingMessage = currentMessages.some((m: any) => m.isPending)
+    const unsub = EventsOn(
+      "wa:new_message",
+      (data: { chatId: string; message: any; clientTempId?: string }) => {
+        if (data?.chatId === chatId && data.message?.Info?.ID) {
+          // Use getState to avoid depending on messages array and causing re-subscriptions
+          const currentMessages = useMessageStore.getState().messages[chatId] || []
+          const hasPendingMessage = currentMessages.some((m: any) => m.isPending)
 
-        if (hasPendingMessage && data.message.Info?.IsFromMe) {
-          // Find and replace the most recent pending message
-          const pendingMessages = currentMessages.filter((m: any) => m.isPending)
-          if (pendingMessages.length > 0) {
-            const lastPending = pendingMessages[pendingMessages.length - 1]
-            updatePendingMessageToSent(data.chatId, lastPending.tempId, data.message)
+          if (hasPendingMessage && data.message.Info?.IsFromMe && data.clientTempId) {
+            const pendingMessages = currentMessages.filter((m: any) => m.isPending)
+            const pending = pendingMessages.find((m: any) => m.tempId === data.clientTempId)
+            if (pending) {
+              for (const body of ["imageMessage", "videoMessage", "audioMessage"]) {
+                const transient =
+                  pending.Content?.[body]?._tempImage || pending.Content?.[body]?._tempFile
+                if (transient && data.message.Content?.[body]) {
+                  data.message.Content[body][
+                    transient instanceof File ? "_tempFile" : "_tempImage"
+                  ] = transient
+                }
+              }
+              updatePendingMessageToSent(data.chatId, pending.tempId, data.message)
+            } else {
+              updateMessage(data.chatId, data.message)
+            }
           } else {
             updateMessage(data.chatId, data.message)
           }
-        } else {
-          updateMessage(data.chatId, data.message)
         }
-
-        if (isAtBottom) {
-          requestAnimationFrame(() => {
-            scrollToBottom(false)
-          })
-        }
-      }
-    })
+      },
+    )
 
     return () => unsub()
-  }, [chatId, updateMessage, updatePendingMessageToSent, scrollToBottom, isAtBottom])
+  }, [chatId, updateMessage, updatePendingMessageToSent])
 
   useGSAP(() => {
     if (!scrollButtonRef.current) return
@@ -625,11 +733,11 @@ export function ChatDetail({ chatId, chatName, chatAvatar, onBack }: ChatDetailP
               sentMediaCache={sentMediaCache}
               onReply={setReplyingTo}
               onQuotedClick={handleQuotedClick}
-              onLoadMore={loadMoreMessages}
+              onLoadMore={() => void loadMoreMessages()}
               onAtBottomChange={handleAtBottomChange}
               pinnedIds={pinnedIds}
               isLoading={isLoadingMore}
-              hasMore={hasMore}
+              hasMore={isReady && hasMore}
               highlightedMessageId={highlightedMessageId}
             />
           </div>

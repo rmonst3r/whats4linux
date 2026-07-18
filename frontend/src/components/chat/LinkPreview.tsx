@@ -1,58 +1,78 @@
-import { useEffect, useState } from "react"
-import { GetLinkPreview, GetLinkPreviewImage } from "../../../wailsjs/go/api/Api"
+import { useEffect, useRef, useState } from "react"
+import { GetLinkPreviewImage } from "../../../wailsjs/go/api/Api"
 import { BrowserOpenURL } from "../../../wailsjs/runtime/runtime"
+import { LRUCache } from "../../lib/lruCache"
 
-interface Preview {
+export interface LinkPreviewData {
   url: string
   title: string
   description: string
-  thumbnail: string
+  has_poster?: boolean
+  thumbnail?: string
 }
 
-// Module-level caches: Virtuoso remounts rows on every scroll pass, and an
-// async preview popping in after mount grows the row and makes the whole list
-// jump mid-scroll. After the first fetch (including "no preview" = null) the
-// card renders synchronously and the row height is stable forever.
-const previewCache = new Map<string, Preview | null>()
-const posterCache = new Map<string, string>()
+const posterCache = new LRUCache<string, string>(48, 24 * 1024 * 1024, value => value.length)
+const posterRequests = new Map<string, Promise<string>>()
+
+function loadPosterOnce(messageId: string) {
+  const existing = posterRequests.get(messageId)
+  if (existing) return existing
+  const request = GetLinkPreviewImage(messageId).finally(() => {
+    if (posterRequests.get(messageId) === request) posterRequests.delete(messageId)
+  })
+  posterRequests.set(messageId, request)
+  return request
+}
 
 // Renders the WhatsApp link-preview card under a message, if one was stored.
-export function LinkPreview({ messageId }: { messageId: string }) {
-  const [preview, setPreview] = useState<Preview | null>(() => previewCache.get(messageId) ?? null)
+export function LinkPreview({
+  messageId,
+  preview,
+}: {
+  messageId: string
+  preview?: LinkPreviewData | null
+}) {
   const [poster, setPoster] = useState<string>(() => posterCache.get(messageId) ?? "")
+  const posterAreaRef = useRef<HTMLDivElement | null>(null)
 
   useEffect(() => {
-    if (previewCache.has(messageId)) return
+    if (!preview?.has_poster || preview.thumbnail || posterCache.has(messageId)) return
+    const area = posterAreaRef.current
+    if (!area) return
     let cancelled = false
-    GetLinkPreview(messageId)
-      .then(p => {
-        if (!p || (!p.title && !p.thumbnail)) {
-          previewCache.set(messageId, null)
+    let timer: ReturnType<typeof setTimeout> | undefined
+    let started = false
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        if (!entry.isIntersecting || started) {
+          if (timer && !started) clearTimeout(timer)
           return
         }
-        previewCache.set(messageId, p as Preview)
-        if (!cancelled) setPreview(p as Preview)
-        // The poster is usually a downloadable reference, not embedded — fetch
-        // it lazily (downloaded + cached on first request).
-        if (!p.thumbnail) {
-          GetLinkPreviewImage(messageId)
+        timer = setTimeout(() => {
+          started = true
+          loadPosterOnce(messageId)
             .then(url => {
               if (!url) return
               posterCache.set(messageId, url)
               if (!cancelled) setPoster(url)
             })
             .catch(() => {})
-        }
-      })
-      .catch(() => {})
+        }, 200)
+      },
+      { rootMargin: "150px", threshold: 0.01 },
+    )
+    observer.observe(area)
     return () => {
       cancelled = true
+      observer.disconnect()
+      if (timer) clearTimeout(timer)
     }
-  }, [messageId])
+  }, [messageId, preview?.has_poster, preview?.thumbnail])
 
   if (!preview) return null
 
   const image = preview.thumbnail || poster
+  const hasImageArea = !!(preview.thumbnail || preview.has_poster)
 
   let domain = ""
   try {
@@ -68,7 +88,11 @@ export function LinkPreview({ messageId }: { messageId: string }) {
     >
       {/* Fixed height: an unconstrained image resizes the card (and the row)
           when it decodes, which shakes the virtualized list. */}
-      {image && <img src={image} alt="" className="w-full h-40 object-cover bg-black/20" />}
+      {hasImageArea && (
+        <div ref={posterAreaRef} className="w-full h-40 bg-black/20">
+          {image && <img src={image} alt="" className="w-full h-full object-cover" />}
+        </div>
+      )}
       <div className="p-2">
         {preview.title && (
           <div className="text-sm font-medium line-clamp-2 leading-snug">{preview.title}</div>

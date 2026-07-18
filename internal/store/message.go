@@ -46,15 +46,23 @@ type ChatMessage struct {
 
 // DecodedMessage represents a message from messages.db with decoded fields
 type DecodedMessage struct {
-	Type             mtypes.MediaType `json:"type"`
-	ReplyToMessageID string           `json:"reply_to_message_id"`
-	Edited           bool             `json:"edited"`
-	Forwarded        bool             `json:"forwarded"`
-	Reactions        []Reaction       `json:"reactions"`
+	Type             mtypes.MediaType    `json:"type"`
+	ReplyToMessageID string              `json:"reply_to_message_id"`
+	Edited           bool                `json:"edited"`
+	Forwarded        bool                `json:"forwarded"`
+	Reactions        []Reaction          `json:"reactions"`
+	LinkPreview      *DecodedLinkPreview `json:"link_preview,omitempty"`
 	// Info provides compatibility with frontend that expects types.MessageInfo structure
 	Info DecodedMessageInfo `json:"Info"`
 	// Content provides a minimal content structure for frontend rendering
 	Content *DecodedMessageContent `json:"Content"`
+}
+
+type DecodedLinkPreview struct {
+	URL         string `json:"url"`
+	Title       string `json:"title"`
+	Description string `json:"description"`
+	HasPoster   bool   `json:"has_poster"`
 }
 
 // DecodedMessageInfo is a simplified MessageInfo for frontend compatibility
@@ -1240,12 +1248,13 @@ func extractMessageContent(msg *waE2E.Message) (text, fileName, replyToMessageID
 }
 
 type decodedPageRow struct {
-	message  DecodedMessage
-	text     string
-	fileName string
-	width    int
-	height   int
-	gif      bool
+	message     DecodedMessage
+	text        string
+	fileName    string
+	width       int
+	height      int
+	gif         bool
+	linkPreview *DecodedLinkPreview
 }
 
 type quotedContent struct {
@@ -1282,18 +1291,22 @@ func (ms *MessageStore) GetDecodedMessagesPaged(chatJID string, beforeTimestamp 
 
 	for rows.Next() {
 		var (
-			msgID             string
-			chatJIDRow        string
-			senderJID         string
-			timestamp         int64
-			isFromMe          bool
-			text              sql.NullString
-			replyTo           sql.NullString
-			edited, forwarded bool
-			msgType           sql.NullInt32
-			fileName          sql.NullString
-			width, height     sql.NullInt64
-			gif               sql.NullBool
+			msgID              string
+			chatJIDRow         string
+			senderJID          string
+			timestamp          int64
+			isFromMe           bool
+			text               sql.NullString
+			replyTo            sql.NullString
+			edited, forwarded  bool
+			msgType            sql.NullInt32
+			fileName           sql.NullString
+			width, height      sql.NullInt64
+			gif                sql.NullBool
+			previewURL         sql.NullString
+			previewTitle       sql.NullString
+			previewDescription sql.NullString
+			previewHasPoster   sql.NullBool
 		)
 
 		err := rows.Scan(
@@ -1311,11 +1324,22 @@ func (ms *MessageStore) GetDecodedMessagesPaged(chatJID string, beforeTimestamp 
 			&width,
 			&height,
 			&gif,
+			&previewURL,
+			&previewTitle,
+			&previewDescription,
+			&previewHasPoster,
 		)
 		if err != nil {
 			return nil, err
 		}
 
+		var linkPreview *DecodedLinkPreview
+		if previewURL.Valid || previewTitle.Valid || previewDescription.Valid || previewHasPoster.Bool {
+			linkPreview = &DecodedLinkPreview{
+				URL: previewURL.String, Title: previewTitle.String,
+				Description: previewDescription.String, HasPoster: previewHasPoster.Bool,
+			}
+		}
 		page = append(page, decodedPageRow{
 			message: DecodedMessage{
 				Type:             mtypes.MediaType(msgType.Int32),
@@ -1331,11 +1355,12 @@ func (ms *MessageStore) GetDecodedMessagesPaged(chatJID string, beforeTimestamp 
 					Chat:      chatJIDRow,
 				},
 			},
-			text:     text.String,
-			fileName: fileName.String,
-			width:    int(width.Int64),
-			height:   int(height.Int64),
-			gif:      gif.Bool,
+			text:        text.String,
+			fileName:    fileName.String,
+			width:       int(width.Int64),
+			height:      int(height.Int64),
+			gif:         gif.Bool,
+			linkPreview: linkPreview,
 		})
 	}
 	if err := rows.Err(); err != nil {
@@ -1364,6 +1389,7 @@ func (ms *MessageStore) GetDecodedMessagesPaged(chatJID string, beforeTimestamp 
 	for i := range page {
 		item := &page[i]
 		item.message.Reactions = reactions[item.message.Info.ID]
+		item.message.LinkPreview = item.linkPreview
 
 		var contextInfo *ContextInfo
 		if replyID := item.message.ReplyToMessageID; replyID != "" {
@@ -1623,16 +1649,20 @@ func (ms *MessageStore) CacheLinkPreviewThumbnail(messageID string, data []byte)
 // GetDecodedMessage returns a single decoded message from messages.db
 func (ms *MessageStore) GetDecodedMessage(chatJID string, messageID string) (*DecodedMessage, error) {
 	var (
-		sender            string
-		timestamp         int64
-		isFromMe          bool
-		replyTo           sql.NullString
-		edited, forwarded bool
-		text              sql.NullString
-		msgType           sql.NullInt32
-		fileName          sql.NullString
-		width, height     sql.NullInt64
-		gif               sql.NullBool
+		sender             string
+		timestamp          int64
+		isFromMe           bool
+		replyTo            sql.NullString
+		edited, forwarded  bool
+		text               sql.NullString
+		msgType            sql.NullInt32
+		fileName           sql.NullString
+		width, height      sql.NullInt64
+		gif                sql.NullBool
+		previewURL         sql.NullString
+		previewTitle       sql.NullString
+		previewDescription sql.NullString
+		previewHasPoster   sql.NullBool
 	)
 
 	// Use runSync to ensure read consistency with pending writes
@@ -1650,6 +1680,10 @@ func (ms *MessageStore) GetDecodedMessage(chatJID string, messageID string) (*De
 			&width,
 			&height,
 			&gif,
+			&previewURL,
+			&previewTitle,
+			&previewDescription,
+			&previewHasPoster,
 		)
 
 		if err != nil {
@@ -1676,6 +1710,12 @@ func (ms *MessageStore) GetDecodedMessage(chatJID string, messageID string) (*De
 			Sender:    sender,
 			Chat:      chatJID,
 		},
+	}
+	if previewURL.Valid || previewTitle.Valid || previewDescription.Valid || previewHasPoster.Bool {
+		msg.LinkPreview = &DecodedLinkPreview{
+			URL: previewURL.String, Title: previewTitle.String,
+			Description: previewDescription.String, HasPoster: previewHasPoster.Bool,
+		}
 	}
 
 	// Load reactions outside transaction to avoid nested runSync

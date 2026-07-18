@@ -906,6 +906,7 @@ export function ChatListScreen({ onOpenSettings }: ChatListScreenProps) {
         >
           {selectedChatId ? (
             <ChatDetail
+              key={selectedChatId}
               chatId={selectedChatId}
               chatName={selectedChatName}
               chatAvatar={selectedChatAvatar}

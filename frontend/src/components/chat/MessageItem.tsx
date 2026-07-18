@@ -22,6 +22,7 @@ import { useContactStore } from "../../store/useContactStore"
 import { useMessageStore } from "../../store"
 import { isMe } from "../../lib/self"
 import { formatPhone, phoneFromJID } from "../../lib/utils"
+import { LRUCache } from "../../lib/lruCache"
 
 const QUICK_REACTIONS = ["👍", "❤️", "😂", "😮", "😢", "🙏"]
 const EmojiPicker = lazy(() => import("./EmojiPickerLazy"))
@@ -39,7 +40,9 @@ interface MessageItemProps {
 
 // Module-level cache: one avatar lookup per sender per session, shared by
 // every message row (Virtuoso mounts/unmounts rows constantly).
-const senderAvatarCache = new Map<string, string | null>()
+const senderAvatarCache = new LRUCache<string, string | null>(128, 16 * 1024 * 1024, value =>
+  value ? value.length : 1,
+)
 
 function SenderAvatar({ jid }: { jid: string }) {
   const [url, setUrl] = useState<string | null>(senderAvatarCache.get(jid) ?? null)
@@ -228,7 +231,12 @@ export function MessageItem({
             <span dangerouslySetInnerHTML={{ __html: htmlContent }} />
             {timeMeta(true)}
           </div>
-          {htmlContent.includes('class="msg-link"') && <LinkPreview messageId={message.Info.ID} />}
+          {htmlContent.includes('class="msg-link"') && (
+            <LinkPreview
+              messageId={message.Info.ID}
+              preview={message.link_preview ?? null}
+            />
+          )}
         </>
       )
     } else if (content.imageMessage)

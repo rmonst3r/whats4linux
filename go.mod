@@ -8,7 +8,7 @@ require (
 	github.com/mattn/go-sqlite3 v1.14.46
 	github.com/nyaruka/phonenumbers v1.8.0
 	github.com/urfave/cli v1.22.17
-	github.com/wailsapp/wails/v2 v2.12.0
+	github.com/wailsapp/wails/v2 v2.13.0
 	go.mau.fi/whatsmeow v0.0.0-20260616120636-eaa388b4e537
 	google.golang.org/protobuf v1.36.11
 )

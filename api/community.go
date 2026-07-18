@@ -6,7 +6,6 @@ import (
 	"sort"
 	"strings"
 
-	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/types"
 )
 
@@ -41,20 +40,25 @@ type CommunityDetails struct {
 }
 
 // GetCommunityList returns parent communities the user belongs to.
-// Prefers the local group cache (filled at login); falls back to a live
-// GetJoinedGroups scan if the cache is empty.
+// Prefers the local group cache (filled at login); refreshes from WhatsApp only
+// when the cache is empty. Opening the tab must not block on a network refresh.
 func (a *Api) GetCommunityList() ([]CommunitySummary, error) {
 	if a.waClient == nil {
 		return nil, fmt.Errorf("client not ready")
 	}
 
-	// Refresh group cache so LinkedParent links are up to date (cheap after first run).
 	if a.cw != nil {
-		if err := a.cw.FetchAndStoreGroups(a.waClient); err != nil {
-			log.Println("GetCommunityList: cache refresh failed:", err)
-		}
 		if list, err := a.communitiesFromCache(); err == nil && len(list) > 0 {
 			return list, nil
+		}
+
+		// A new install may reach the tab before the Connected handler finishes
+		// populating the cache. Refresh once, then return the resulting cache even
+		// when it is legitimately empty.
+		if err := a.cw.FetchAndStoreGroups(a.waClient); err == nil {
+			return a.communitiesFromCache()
+		} else {
+			log.Println("GetCommunityList: cache refresh failed:", err)
 		}
 	}
 
@@ -184,10 +188,6 @@ func (a *Api) GetCommunityDetails(jidStr string) (CommunityDetails, error) {
 		details.Name = "Community"
 	}
 
-	if avatar, err := a.getCommunityAvatar(jid); err == nil {
-		details.AvatarURL = avatar
-	}
-
 	// Linked subgroups (includes announcement / default sub-group).
 	subGroups, err := a.waClient.GetSubGroups(a.ctx, jid)
 	if err != nil {
@@ -208,10 +208,6 @@ func (a *Api) GetCommunityDetails(jidStr string) (CommunityDetails, error) {
 		if cg.IsAnnouncement && (cg.Name == "" || cg.Name == details.Name) {
 			cg.Name = "Announcements"
 		}
-		if avatar, err := a.GetCachedAvatar(cg.JID, false); err == nil {
-			cg.AvatarURL = avatar
-		}
-
 		if cg.IsAnnouncement {
 			details.Announcement = &cg
 		} else {
@@ -246,9 +242,6 @@ func (a *Api) communityDetailsFromJoined(details CommunityDetails, parent types.
 				if cg.IsAnnouncement && (cg.Name == "" || cg.Name == details.Name) {
 					cg.Name = "Announcements"
 				}
-				if avatar, err := a.GetCachedAvatar(cg.JID, false); err == nil {
-					cg.AvatarURL = avatar
-				}
 				if cg.IsAnnouncement {
 					details.Announcement = &cg
 				} else {
@@ -279,9 +272,6 @@ func (a *Api) communityDetailsFromJoined(details CommunityDetails, parent types.
 		if cg.IsAnnouncement && (cg.Name == "" || cg.Name == details.Name) {
 			cg.Name = "Announcements"
 		}
-		if avatar, err := a.GetCachedAvatar(cg.JID, false); err == nil {
-			cg.AvatarURL = avatar
-		}
 		if cg.IsAnnouncement {
 			details.Announcement = &cg
 		} else {
@@ -289,15 +279,4 @@ func (a *Api) communityDetailsFromJoined(details CommunityDetails, parent types.
 		}
 	}
 	return details, nil
-}
-
-func (a *Api) getCommunityAvatar(jid types.JID) (string, error) {
-	pic, err := a.waClient.GetProfilePictureInfo(a.ctx, jid, &whatsmeow.GetProfilePictureParams{
-		Preview:     true,
-		IsCommunity: true,
-	})
-	if err != nil || pic == nil {
-		return a.GetCachedAvatar(jid.String(), false)
-	}
-	return a.downloadAvatarFromURL(jid.String(), pic.URL)
 }

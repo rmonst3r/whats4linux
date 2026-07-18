@@ -22,7 +22,7 @@ interface MessageListProps {
 
 export interface MessageListHandle {
   scrollToBottom: (behavior?: "auto" | "smooth") => void
-  scrollToMessage: (messageId: string) => void
+  scrollToMessage: (messageId: string) => boolean
 }
 
 const MemoizedMessageItem = memo(MessageItem)
@@ -84,7 +84,9 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
         const index = messages.findIndex(m => m.Info.ID === messageId)
         if (index >= 0) {
           virtuosoRef.current?.scrollToIndex({ index, align: "center", behavior: "smooth" })
+          return true
         }
+        return false
       },
     }),
     [messages],
@@ -98,9 +100,8 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
       firstItemIndex={firstItemIndex}
       initialTopMostItemIndex={Math.max(0, messages.length - 1)}
       increaseViewportBy={OVERSCAN}
-      // Height estimate for unmeasured rows — closer guesses mean smaller
-      // corrective re-anchors while fast-scrolling into unmeasured regions.
-      defaultItemHeight={56}
+      // Let Virtuoso probe a real message height. A hard-coded 56px estimate is
+      // badly wrong for media and preview cards and causes large corrections.
       // Fires when the user scrolls to the very top -> load older messages.
       startReached={() => {
         if (hasMore && !isLoading) onLoadMore?.()

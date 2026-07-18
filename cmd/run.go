@@ -47,8 +47,10 @@ func run(assets fs.FS) cli.ActionFunc {
 			},
 			Linux: &linux.Options{
 				WindowIsTranslucent: false,
-				WebviewGpuPolicy:    linux.WebviewGpuPolicyAlways,
-				ProgramName:         APP_NAME,
+				// Software rendering avoids WebKitGTK GPU-process crashes across
+				// mixed Mesa/NVIDIA/Wayland setups.
+				WebviewGpuPolicy: linux.WebviewGpuPolicyNever,
+				ProgramName:      APP_NAME,
 			},
 		})
 	}

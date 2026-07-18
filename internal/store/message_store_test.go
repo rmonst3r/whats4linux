@@ -114,6 +114,53 @@ func TestPagedQuotedMessagesAreShallow(t *testing.T) {
 	}
 }
 
+func TestDecodedMessagesIncludeLinkPreviewMetadata(t *testing.T) {
+	ms := newTestMessageStore(t)
+	const (
+		chat = "123@s.whatsapp.net"
+		id   = "preview-message"
+	)
+	insertTestMessage(t, ms, id, chat, 1, "")
+	err := ms.runSync(func(tx *sql.Tx) error {
+		_, err := tx.Exec(
+			query.InsertLinkPreview,
+			id,
+			"https://example.com/article",
+			"Example title",
+			"Example description",
+			[]byte{1, 2, 3},
+			"",
+			nil,
+			nil,
+			nil,
+		)
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	page, err := ms.GetDecodedMessagesPaged(chat, 0, "", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page) != 1 || page[0].LinkPreview == nil {
+		t.Fatalf("paged message has no link preview: %#v", page)
+	}
+	preview := page[0].LinkPreview
+	if preview.URL != "https://example.com/article" || preview.Title != "Example title" || !preview.HasPoster {
+		t.Fatalf("unexpected paged preview: %#v", preview)
+	}
+
+	message, err := ms.GetDecodedMessage(chat, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if message.LinkPreview == nil || !message.LinkPreview.HasPoster {
+		t.Fatalf("single decoded message has no poster metadata: %#v", message.LinkPreview)
+	}
+}
+
 func TestRunSyncReturnsCommitFailure(t *testing.T) {
 	ms := newTestMessageStore(t)
 	err := ms.runSync(func(tx *sql.Tx) error {

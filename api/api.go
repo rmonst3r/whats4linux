@@ -473,45 +473,6 @@ func (a *Api) mainEventHandler(evt any) {
 			})
 		}
 
-		// Automatically cache images and stickers when they arrive
-		a.startBackground(func() {
-			if v.Message.GetImageMessage() != nil || v.Message.GetStickerMessage() != nil {
-				var data []byte
-				var err error
-				var mime string
-				var width, height int
-
-				if v.Message.GetImageMessage() != nil {
-					data, err = a.waClient.Download(a.ctx, v.Message.GetImageMessage())
-					if err == nil {
-						mime = v.Message.GetImageMessage().GetMimetype()
-						if mime == "" {
-							mime = "image/jpeg"
-						}
-						width = int(v.Message.GetImageMessage().GetWidth())
-						height = int(v.Message.GetImageMessage().GetHeight())
-					}
-				} else if v.Message.GetStickerMessage() != nil {
-					data, err = a.waClient.Download(a.ctx, v.Message.GetStickerMessage())
-					if err == nil {
-						mime = v.Message.GetStickerMessage().GetMimetype()
-						if mime == "" {
-							mime = "image/webp"
-						}
-						width = int(v.Message.GetStickerMessage().GetWidth())
-						height = int(v.Message.GetStickerMessage().GetHeight())
-					}
-				}
-
-				if err == nil && data != nil {
-					_, cacheErr := a.imageCache.SaveImage(v.Info.ID, data, mime, width, height)
-					if cacheErr != nil {
-					} else {
-					}
-				}
-			}
-		})
-
 	case *events.Picture:
 		a.startBackground(func() { _, _ = a.GetCachedAvatar(v.JID.String(), true) })
 

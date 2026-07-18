@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from "react"
 import { store } from "../../../wailsjs/go/models"
 import { GetCachedImage, DownloadMedia, GetVideoThumbnail } from "../../../wailsjs/go/api/Api"
 import { useUIStore } from "../../store"
+import { LRUCache } from "../../lib/lruCache"
 
 // TODO: fix word wrap for longer words in content
 
@@ -15,18 +16,29 @@ const MEDIA_MIN_W = 300
 const MEDIA_MAX_W = 330
 const MEDIA_MAX_H = 400
 
-// Module-level caches keyed by message ID. Virtuoso constantly unmounts and
-// remounts rows while scrolling; without these every pass over a media row
-// re-runs the RPCs and re-renders placeholder-then-media, which reads as
-// flicker/shake. Paths and thumbnail URLs are small strings — bounded cost.
-const imagePathCache = new Map<string, string>()
-const videoThumbCache = new Map<string, string>()
+// Data URLs can be large. Keep enough recently viewed media to avoid flicker
+// when Virtuoso remounts nearby rows without retaining every chat image for the
+// lifetime of the process.
+const imagePathCache = new LRUCache<string, string>(48, 32 * 1024 * 1024, value => value.length)
+const videoThumbCache = new LRUCache<string, string>(100, 16 * 1024 * 1024, value => value.length)
+const mediaRequests = new Map<string, Promise<string>>()
+
+function loadMediaOnce(key: string, loader: () => Promise<string>): Promise<string> {
+  const existing = mediaRequests.get(key)
+  if (existing) return existing
+  const request = loader().finally(() => {
+    if (mediaRequests.get(key) === request) mediaRequests.delete(key)
+  })
+  mediaRequests.set(key, request)
+  return request
+}
 
 // Fallback box for GIF videos whose dimensions were never stored (rows synced
 // before dimension extraction existed). A fixed square with object-cover is
 // deterministic: the placeholder and the loaded video occupy the same box, so
 // the row height never changes.
 const GIF_FALLBACK_BOX = { width: 256, height: 256 }
+const IMAGE_FALLBACK_BOX = { width: 300, height: 256 }
 
 // Computes the exact box CSS gives the loaded media from its intrinsic
 // dimensions (stored by the backend in message_media), so the placeholder can
@@ -76,6 +88,8 @@ export function MediaContent({
   const [thumbnailSrc, setThumbnailSrc] = useState<string | null>(
     () => videoThumbCache.get(message.Info.ID) ?? null,
   )
+  const loadingRef = useRef(false)
+  const mountedRef = useRef(true)
   const gifLoopsRef = useRef(0)
   const placeholderRef = useRef<HTMLDivElement | null>(null)
   const openLightbox = useUIStore(s => s.openLightbox)
@@ -85,36 +99,32 @@ export function MediaContent({
   const messageBody = (message.Content as any)?.[`${type}Message`]
   const reservedBox =
     type === "image" || (type === "video" && isGif)
-      ? mediaBox(messageBody?.width, messageBody?.height)
+      ? (mediaBox(messageBody?.width, messageBody?.height) ??
+        (type === "image" ? IMAGE_FALLBACK_BOX : GIF_FALLBACK_BOX))
       : null
 
-  const loadFromCache = async (): Promise<string | null> => {
-    if (loading) return null
-    setLoading(true)
-    try {
-      const imagePath = await GetCachedImage(message.Info.ID)
-      if (imagePath) {
-        imagePathCache.set(message.Info.ID, imagePath)
-        setMediaSrc(imagePath)
-      }
-      return imagePath || null
-    } catch (e) {
-      return null
-    } finally {
-      setLoading(false)
-    }
-  }
-
   const handleDownload = async () => {
-    if (loading) return
+    if (loadingRef.current) return
+    loadingRef.current = true
     setLoading(true)
     try {
-      // DownloadMedia returns a ready-to-use data URL with the correct MIME.
-      const dataUrl = await DownloadMedia(chatId, message.Info.ID)
-      setMediaSrc(dataUrl)
-    } catch (e) {
+      const dataUrl =
+        type === "image" || type === "sticker"
+          ? await loadMediaOnce(`image:${message.Info.ID}`, () => GetCachedImage(message.Info.ID))
+          : await loadMediaOnce(`media:${chatId}:${message.Info.ID}`, () =>
+              DownloadMedia(chatId, message.Info.ID),
+            )
+      if (dataUrl) {
+        if (type === "image" || type === "sticker" || isGif) {
+          imagePathCache.set(message.Info.ID, dataUrl)
+        }
+        if (mountedRef.current) setMediaSrc(dataUrl)
+      }
+    } catch {
+      // Keep the download affordance available for a retry.
     } finally {
-      setLoading(false)
+      loadingRef.current = false
+      if (mountedRef.current) setLoading(false)
     }
   }
 
@@ -126,17 +136,28 @@ export function MediaContent({
       openLightbox(videoDataRef.current, "video")
       return
     }
-    if (loading) return
+    if (loadingRef.current) return
+    loadingRef.current = true
     setLoading(true)
     try {
-      const dataUrl = await DownloadMedia(chatId, message.Info.ID)
+      const dataUrl = await loadMediaOnce(`media:${chatId}:${message.Info.ID}`, () =>
+        DownloadMedia(chatId, message.Info.ID),
+      )
       videoDataRef.current = dataUrl
       openLightbox(dataUrl, "video")
-    } catch (e) {
+    } catch {
     } finally {
-      setLoading(false)
+      loadingRef.current = false
+      if (mountedRef.current) setLoading(false)
     }
   }
+
+  useEffect(() => {
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+    }
+  }, [])
 
   useEffect(() => {
     const content = message.Content as any
@@ -155,13 +176,7 @@ export function MediaContent({
       setMediaSrc(sentMediaCache.current.get(message.Info.ID)!)
       return
     }
-    if (type === "image" || type === "sticker") {
-      // Show instantly if cached; otherwise the IntersectionObserver below
-      // fetches it once it's actually on screen.
-      loadFromCache()
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [message.Info.ID, type])
+  }, [message.Content, message.Info.ID, sentMediaCache, type])
 
   // Auto-download image/sticker media once it's visible on screen — covers both
   // "already visible when the chat opens" and "scrolled into view". Debounced so
@@ -175,7 +190,7 @@ export function MediaContent({
     const obs = new IntersectionObserver(
       ([entry]) => {
         if (entry.isIntersecting) {
-          timer = setTimeout(() => handleDownload(), 200)
+          timer = setTimeout(() => void handleDownload(), 200)
         } else if (timer) {
           clearTimeout(timer)
           timer = undefined
@@ -288,9 +303,9 @@ export function MediaContent({
           style={reservedBox ?? GIF_FALLBACK_BOX}
         />
       ) : (
-        <video src={mediaSrc} controls className="block min-w-75 max-w-82.5 max-h-100 rounded-lg" />
+        <video src={mediaSrc} controls className="block w-64 h-64 rounded-lg object-cover" />
       )
-    if (type === "audio") return <audio src={mediaSrc} controls className="w-full" />
+    if (type === "audio") return <audio src={mediaSrc} controls className="w-75 h-14" />
   }
 
   // Video placeholder: show the embedded thumbnail (if any) with a play button
@@ -321,6 +336,28 @@ export function MediaContent({
     )
   }
 
+  if (type === "audio") {
+    return (
+      <div
+        ref={placeholderRef}
+        className="w-75 h-14 rounded-lg bg-gray-200 dark:bg-gray-800 flex items-center justify-center"
+      >
+        {loading ? (
+          <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-green-500" />
+        ) : (
+          <button
+            onClick={() => void handleDownload()}
+            className="bg-black/50 p-2 rounded-full text-white hover:bg-black/70"
+          >
+            <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor">
+              <path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z" />
+            </svg>
+          </button>
+        )}
+      </div>
+    )
+  }
+
   return (
     <div
       ref={placeholderRef}
@@ -336,7 +373,7 @@ export function MediaContent({
         <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-green-500" />
       ) : (
         <button
-          onClick={handleDownload}
+          onClick={() => void handleDownload()}
           className="bg-black/50 p-3 rounded-full text-white hover:bg-black/70"
         >
           <svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor">

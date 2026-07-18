@@ -27,6 +27,9 @@ type LinkPreviewResult struct {
 
 // GetLinkPreview returns the stored preview card for a message's URL, or nil.
 func (a *Api) GetLinkPreview(messageID string) *LinkPreviewResult {
+	if a.messageStore == nil {
+		return nil
+	}
 	lp := a.messageStore.GetLinkPreview(messageID)
 	if lp == nil {
 		return nil
@@ -42,6 +45,9 @@ func (a *Api) GetLinkPreview(messageID string) *LinkPreviewResult {
 // caching it on first request (WhatsApp ships the poster as an encrypted
 // reference rather than embedded). Empty string if there's nothing to fetch.
 func (a *Api) GetLinkPreviewImage(messageID string) string {
+	if a.messageStore == nil {
+		return ""
+	}
 	m := a.messageStore.GetLinkPreviewMedia(messageID)
 	if m == nil {
 		return ""
@@ -50,6 +56,9 @@ func (a *Api) GetLinkPreviewImage(messageID string) string {
 		return "data:image/jpeg;base64," + base64.StdEncoding.EncodeToString(m.Thumbnail)
 	}
 	if m.DirectPath == "" || len(m.MediaKey) == 0 {
+		return ""
+	}
+	if a.waClient == nil {
 		return ""
 	}
 	data, err := a.waClient.DownloadMediaWithPath(
@@ -67,6 +76,9 @@ func (a *Api) GetLinkPreviewImage(messageID string) string {
 // or an empty string if none was stored. Lets the UI show a video preview + play
 // button without downloading the full video.
 func (a *Api) GetVideoThumbnail(messageID string) string {
+	if a.messageStore == nil {
+		return ""
+	}
 	thumb := a.messageStore.GetThumbnail(messageID)
 	if len(thumb) == 0 {
 		return ""
@@ -75,9 +87,18 @@ func (a *Api) GetVideoThumbnail(messageID string) string {
 }
 
 func (a *Api) DownloadMedia(chatJID string, messageID string) (string, error) {
+	if a.messageStore == nil {
+		return "", fmt.Errorf("message store is not ready")
+	}
 	msg, err := a.messageStore.GetMessageWithMedia(chatJID, messageID)
 	if err != nil || msg == nil {
 		return "", fmt.Errorf("message not found")
+	}
+	if msg.Media == nil {
+		return "", fmt.Errorf("message %s has no downloadable media", messageID)
+	}
+	if a.waClient == nil {
+		return "", fmt.Errorf("WhatsApp client is not ready")
 	}
 
 	mime := msg.Media.GetMimetype()
@@ -116,6 +137,12 @@ func (a *Api) DownloadMedia(chatJID string, messageID string) (string, error) {
 
 // downloadMedia downloads media from a message and returns data, mime, width, height
 func (a *Api) downloadMedia(msg *store.ExtendedMessage) ([]byte, string, int, int, error) {
+	if msg == nil || msg.Media == nil {
+		return nil, "", 0, 0, fmt.Errorf("message has no downloadable media")
+	}
+	if a.waClient == nil {
+		return nil, "", 0, 0, fmt.Errorf("WhatsApp client is not ready")
+	}
 	data, err := a.waClient.Download(a.ctx, msg.Media)
 	mime := msg.Media.GetMimetype()
 
@@ -128,6 +155,9 @@ func (a *Api) downloadMedia(msg *store.ExtendedMessage) ([]byte, string, int, in
 }
 
 func (a *Api) GetCachedImage(messageID string) (string, error) {
+	if a.imageCache == nil {
+		return "", fmt.Errorf("image cache is not ready")
+	}
 	// Try to read from cache first
 	data, mime, err := a.imageCache.ReadImageByMessageID(messageID)
 	if err == nil {
@@ -135,9 +165,15 @@ func (a *Api) GetCachedImage(messageID string) (string, error) {
 	}
 
 	// Image not in cache, download and cache it
+	if a.messageStore == nil {
+		return "", fmt.Errorf("message store is not ready")
+	}
 	msg, err := a.messageStore.GetMessageWithMediaByID(messageID)
 	if err != nil || msg == nil {
 		return "", fmt.Errorf("message not found")
+	}
+	if msg.Media == nil {
+		return "", fmt.Errorf("message %s has no downloadable image", messageID)
 	}
 
 	data, mime, width, height, err := a.downloadMedia(msg)
@@ -157,6 +193,9 @@ func (a *Api) GetCachedImage(messageID string) (string, error) {
 // Returns map of message IDs to data URLs
 func (a *Api) GetCachedImages(messageIDs []string) (map[string]string, error) {
 	result := make(map[string]string)
+	if a.imageCache == nil {
+		return result, fmt.Errorf("image cache is not ready")
+	}
 	metas, err := a.imageCache.GetImagesByMessageIDs(messageIDs)
 	if err != nil {
 		return nil, err
@@ -176,6 +215,9 @@ func (a *Api) GetCachedImages(messageIDs []string) (map[string]string, error) {
 
 // GetCachedAvatar retrieves or downloads and caches an avatar for a JID
 func (a *Api) GetCachedAvatar(jid string, recache bool) (string, error) {
+	if a.imageCache == nil {
+		return "", fmt.Errorf("image cache is not ready")
+	}
 
 	// Try to get cached avatar data first
 	data, mime, err := a.imageCache.ReadAvatarByJID(jid)
@@ -186,6 +228,9 @@ func (a *Api) GetCachedAvatar(jid string, recache bool) (string, error) {
 	}
 
 	// Avatar not in cache, download and cache it
+	if a.waClient == nil || a.waClient.Store == nil {
+		return "", fmt.Errorf("WhatsApp client is not ready")
+	}
 	jidParsed, err := types.ParseJID(jid)
 	if err != nil {
 		return "", fmt.Errorf("invalid JID: %w", err)
@@ -259,7 +304,7 @@ func (a *Api) downloadAvatarFromURL(jid, url string) (string, error) {
 // contains the device ID like so:
 // XXXX:45@s.whatsapp.net instead of XXXX:@s.whatsapp.net
 func (a *Api) GetSelfAvatar(recache bool) (string, error) {
-	if a.waClient == nil || a.waClient.Store.ID == nil {
+	if a.waClient == nil || a.waClient.Store == nil || a.waClient.Store.ID == nil {
 		return "", fmt.Errorf("not logged in")
 	}
 	jid := canonicalUserJID(a.ctx, a.waClient, *a.waClient.Store.ID)
