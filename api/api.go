@@ -552,14 +552,83 @@ func (a *Api) mainEventHandler(evt any) {
 	case *events.Disconnected:
 		a.waClient.SendPresence(a.ctx, types.PresenceUnavailable)
 	case *events.Receipt:
-		runtime.EventsEmit(a.ctx, "wa:message_receipt", map[string]any{
-			"chatId": v.Chat.String(),
-			"status": v.Type.GoString(),
-		})
+		a.handleReceipt(v)
 	default:
 		// Ignore other events for now
 	}
 
+}
+
+// handleReceipt turns a whatsmeow receipt (delivered / read / played) into an
+// outgoing-message tick update, matching the official client's semantics: in a
+// group the tick only advances once *every* recipient reaches that level, so
+// each participant's receipt is recorded independently and the message's
+// aggregate status is recomputed against the group size. State is persisted so
+// ticks survive a restart. Receipts that don't move ticks (read-self, sender,
+// retry, server errors, our own devices) are ignored.
+func (a *Api) handleReceipt(v *events.Receipt) {
+	var status int
+	switch v.Type {
+	case types.ReceiptTypeDelivered:
+		status = store.MessageStatusDelivered
+	case types.ReceiptTypeRead, types.ReceiptTypePlayed:
+		status = store.MessageStatusRead
+	default:
+		return
+	}
+
+	if len(v.MessageIDs) == 0 {
+		return
+	}
+
+	participant := a.canonicalJID(v.Sender)
+	required := a.requiredRecipients(v.Chat)
+
+	// Group the advanced messages by their new aggregate status so a single
+	// event carries a consistent tick level to the frontend.
+	buckets := make(map[int][]string)
+	for _, id := range v.MessageIDs {
+		agg, changed := a.messageStore.RecordParticipantReceipt(string(id), participant, status, required)
+		if changed {
+			buckets[agg] = append(buckets[agg], string(id))
+		}
+	}
+
+	chatID := a.canonicalJID(v.Chat)
+	for st, ids := range buckets {
+		runtime.EventsEmit(a.ctx, "wa:message_receipt", map[string]any{
+			"chatId":     chatID,
+			"messageIds": ids,
+			"status":     st,
+		})
+	}
+}
+
+// requiredRecipients returns how many recipients must acknowledge a message
+// before its tick advances: 1 for a direct chat, and the group size minus
+// ourselves for a group. A missing/unknown group falls back to 1 so ticks still
+// progress rather than getting stuck.
+func (a *Api) requiredRecipients(chat types.JID) int {
+	if chat.Server != types.GroupServer {
+		return 1
+	}
+	g, err := a.cw.FetchGroup(chat.String())
+	if err != nil || g.ParticipantCount <= 1 {
+		return 1
+	}
+	return g.ParticipantCount - 1
+}
+
+// canonicalJID resolves a LID to its phone-number JID (when known) and strips
+// the device part, so the same recipient is counted once even if some receipts
+// arrive under a LID and others under a phone number.
+func (a *Api) canonicalJID(jid types.JID) string {
+	if jid.ActualAgent() == types.LIDDomain {
+		if pn, err := a.waClient.Store.LIDs.GetPNForLID(a.ctx, jid); err == nil && pn.User != "" {
+			jid = pn
+		}
+	}
+	return jid.ToNonAD().String()
 }
 
 // processHistorySync stores the messages contained in a whatsmeow HistorySync

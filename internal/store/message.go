@@ -44,12 +44,21 @@ type ChatMessage struct {
 	Sender      string
 }
 
+// Outgoing message receipt status, mirrored to the frontend so it can render
+// the correct tick. Values are monotonic: a message only ever moves forward.
+const (
+	MessageStatusNone      = 0 // sent to the server, no receipt yet (single tick)
+	MessageStatusDelivered = 2 // reached the recipient's device (double gray tick)
+	MessageStatusRead      = 3 // opened/played by the recipient (double blue tick)
+)
+
 // DecodedMessage represents a message from messages.db with decoded fields
 type DecodedMessage struct {
 	Type             mtypes.MediaType    `json:"type"`
 	ReplyToMessageID string              `json:"reply_to_message_id"`
 	Edited           bool                `json:"edited"`
 	Forwarded        bool                `json:"forwarded"`
+	Status           int                 `json:"status"`
 	Reactions        []Reaction          `json:"reactions"`
 	LinkPreview      *DecodedLinkPreview `json:"link_preview,omitempty"`
 	// Info provides compatibility with frontend that expects types.MessageInfo structure
@@ -170,6 +179,12 @@ func NewMessageStore() (*MessageStore, error) {
 		}
 		if _, aerr := tx.Exec(query.AddThumbnailColumn); aerr != nil && !strings.Contains(aerr.Error(), "duplicate column") {
 			return aerr
+		}
+		if _, aerr := tx.Exec(query.AddStatusColumn); aerr != nil && !strings.Contains(aerr.Error(), "duplicate column") {
+			return aerr
+		}
+		if _, err = tx.Exec(query.CreateMessageReceiptsTable); err != nil {
+			return err
 		}
 		_, err = tx.Exec(query.CreatePinnedMessagesTable)
 		if err != nil {
@@ -1408,6 +1423,11 @@ func (ms *MessageStore) scanDecodedMessages(rows *sql.Rows, chatJID string) ([]D
 				contextInfo.QuotedMessage = quote.content
 			}
 		}
+		// Outgoing messages carry a receipt status so the UI can render the
+		// right tick; incoming messages never show one.
+		if item.message.Info.IsFromMe {
+			item.message.Status = ms.messageStatus(item.message.Info.ID)
+		}
 		item.message.Content = buildDecodedContentValues(
 			item.text,
 			item.fileName,
@@ -1508,6 +1528,7 @@ func (ms *MessageStore) DeleteMessage(messageID string) error {
 		`DELETE FROM message_media WHERE message_id = ?`,
 		`DELETE FROM reactions WHERE message_id = ?`,
 		`DELETE FROM link_previews WHERE message_id = ?`,
+		`DELETE FROM message_receipts WHERE message_id = ?`,
 	} {
 		if _, err := tx.Exec(stmt, messageID); err != nil {
 			return err
@@ -1659,6 +1680,84 @@ func (ms *MessageStore) mediaDimensions(messageID string) (int, int) {
 		return 0, 0
 	}
 	return int(width.Int64), int(height.Int64)
+}
+
+// SetMessageStatus advances the receipt status of an outgoing message. The
+// write is monotonic (see UpdateMessageStatus) so out-of-order receipts can't
+// downgrade a message. Returns true if the row actually moved forward.
+func (ms *MessageStore) SetMessageStatus(messageID string, status int) bool {
+	if messageID == "" {
+		return false
+	}
+	var changed bool
+	_ = ms.runSync(func(tx *sql.Tx) error {
+		res, err := tx.Exec(query.UpdateMessageStatus, status, messageID, status)
+		if err != nil {
+			return err
+		}
+		if n, _ := res.RowsAffected(); n > 0 {
+			changed = true
+		}
+		return nil
+	})
+	return changed
+}
+
+// RecordParticipantReceipt records one recipient's receipt for an outgoing
+// message and recomputes the message's aggregate tick.
+//
+// requiredRecipients is how many recipients must acknowledge before a tick
+// advances (1 for a direct chat; group size minus ourselves for a group). The
+// aggregate is the highest level reached by *every* required recipient, so a
+// group only turns blue once all members have read — exactly like the official
+// WhatsApp client. The aggregate is persisted (monotonically) into the message
+// row and returned along with whether it advanced.
+func (ms *MessageStore) RecordParticipantReceipt(messageID, participant string, status, requiredRecipients int) (aggregate int, changed bool) {
+	if messageID == "" || participant == "" {
+		return ms.messageStatus(messageID), false
+	}
+
+	_ = ms.runSync(func(tx *sql.Tx) error {
+		_, err := tx.Exec(query.UpsertMessageReceipt, messageID, participant, status)
+		return err
+	})
+
+	if requiredRecipients < 1 {
+		requiredRecipients = 1
+	}
+
+	aggregate = MessageStatusNone
+	if ms.countReceiptsAtLeast(messageID, MessageStatusRead) >= requiredRecipients {
+		aggregate = MessageStatusRead
+	} else if ms.countReceiptsAtLeast(messageID, MessageStatusDelivered) >= requiredRecipients {
+		aggregate = MessageStatusDelivered
+	}
+
+	changed = ms.SetMessageStatus(messageID, aggregate)
+	return aggregate, changed
+}
+
+// countReceiptsAtLeast counts distinct participants who have reached at least
+// the given status for a message.
+func (ms *MessageStore) countReceiptsAtLeast(messageID string, status int) int {
+	var n int
+	if err := ms.db.QueryRow(query.CountMessageReceiptsAtLeast, messageID, status).Scan(&n); err != nil {
+		return 0
+	}
+	return n
+}
+
+// messageStatus returns the stored receipt status for a message. Missing rows /
+// messages stored before the column existed default to MessageStatusNone.
+func (ms *MessageStore) messageStatus(messageID string) int {
+	if messageID == "" {
+		return MessageStatusNone
+	}
+	var status sql.NullInt32
+	if err := ms.db.QueryRow(query.SelectMessageStatusByID, messageID).Scan(&status); err != nil {
+		return MessageStatusNone
+	}
+	return int(status.Int32)
 }
 
 // isGifPlayback reports whether a video message was flagged as GIF playback
@@ -1817,6 +1916,9 @@ func (ms *MessageStore) GetDecodedMessage(chatJID string, messageID string) (*De
 				contextInfo.QuotedMessage = quote.content
 			}
 		}
+	}
+	if isFromMe {
+		msg.Status = ms.messageStatus(messageID)
 	}
 	msg.Content = buildDecodedContentValues(
 		text.String,

@@ -58,6 +58,7 @@ export function ChatDetail({ chatId, chatName, chatAvatar, onBack, initialSearch
     addPendingMessage,
     updatePendingMessageToSent,
     removeMessage,
+    setMessageStatus,
   } = useMessageStore()
   const { setTypingIndicator, showEmojiPicker, setShowEmojiPicker, chatInfoOpen, setChatInfoOpen } =
     useUIStore()
@@ -451,16 +452,41 @@ export function ChatDetail({ chatId, chatName, chatAvatar, onBack, initialSearch
     [chatId, loadMoreMessages],
   )
 
+  // Read-receipt marking, matching the official client: a message is only
+  // marked read while the chat is genuinely on screen (window focused and the
+  // tab visible) and scrolled to the latest messages. We never mark read while
+  // backgrounded, never for our own messages, and each incoming message is
+  // marked exactly once so we don't re-notify. The backend additionally honours
+  // the read-receipts privacy toggle before anything is sent.
+  const markedReadRef = useRef<Set<string>>(new Set())
   useEffect(() => {
-    if (isAtBottom) {
-      const messageIds = chatMessages.map((m: any) => m?.Info?.ID).filter((id: any) => !!id)
-      if (messageIds.length > 0) {
-        MarkRead(chatId, messageIds, "read-msg").catch(err => {
-          console.error("Failed to mark messages as read:", err)
-        })
-      }
+    markedReadRef.current = new Set()
+  }, [chatId])
+  useEffect(() => {
+    const markVisibleAsRead = () => {
+      if (!isAtBottom) return
+      if (document.visibilityState !== "visible" || !document.hasFocus()) return
+      const currentMessages = useMessageStore.getState().messages[chatId] || []
+      const unread = currentMessages
+        .filter((m: any) => !m?.Info?.IsFromMe && m?.Info?.ID && !markedReadRef.current.has(m.Info.ID))
+        .map((m: any) => m.Info.ID as string)
+      if (unread.length === 0) return
+      unread.forEach(id => markedReadRef.current.add(id))
+      MarkRead(chatId, unread, "read-msg").catch(err => {
+        console.error("Failed to mark messages as read:", err)
+      })
     }
-  }, [isAtBottom, chatId, chatMessages])
+
+    markVisibleAsRead()
+    // Re-check when the user returns to the window/tab so messages that arrived
+    // (or were scrolled to) while we were away get marked only once we're back.
+    window.addEventListener("focus", markVisibleAsRead)
+    document.addEventListener("visibilitychange", markVisibleAsRead)
+    return () => {
+      window.removeEventListener("focus", markVisibleAsRead)
+      document.removeEventListener("visibilitychange", markVisibleAsRead)
+    }
+  }, [isAtBottom, chatId, messages])
 
   const handleInputChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     const newValue = e.target.value
@@ -799,6 +825,24 @@ export function ChatDetail({ chatId, chatName, chatAvatar, onBack, initialSearch
     })
     return () => unsub()
   }, [chatId, removeMessage])
+
+  // Advance the ticks on our sent messages as delivered/read receipts arrive.
+  // Match by message ID (globally unique) rather than requiring the event's
+  // chat JID to equal the open chat's — a receipt's chat can arrive in a
+  // different addressing form (LID vs phone number) than the JID the chat was
+  // opened with, and setMessageStatus only touches messages actually present in
+  // this chat, so applying it unconditionally is safe.
+  useEffect(() => {
+    const unsub = EventsOn(
+      "wa:message_receipt",
+      (data: { chatId: string; messageIds: string[]; status: number }) => {
+        if (data?.messageIds?.length) {
+          setMessageStatus(chatId, data.messageIds, data.status)
+        }
+      },
+    )
+    return () => unsub()
+  }, [chatId, setMessageStatus])
 
   useGSAP(() => {
     if (!scrollButtonRef.current) return

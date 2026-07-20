@@ -926,12 +926,34 @@ func (a *Api) SendMessage(chatJID string, content MessageContent) (string, error
 
 	return resp.ID, nil
 }
+// readReceiptsEnabled reports whether the user currently allows sending read
+// receipts. It defaults to true when the setting is missing or malformed, which
+// matches the frontend default and WhatsApp's out-of-the-box behaviour.
+func readReceiptsEnabled() bool {
+	v, ok := store.GetSettings()["readReceipts"]
+	if !ok {
+		return true
+	}
+	enabled, ok := v.(bool)
+	if !ok {
+		return true
+	}
+	return enabled
+}
+
 func (a *Api) MarkRead(chatJID string, messageIDs []string, Type string) error {
 	parsedChatJID, err := types.ParseJID(chatJID)
 	if err != nil {
 		return err
 	}
 	if Type == "read-msg" {
+		// Honour the read-receipt privacy setting. When it's off we never tell
+		// WhatsApp we've seen the message, so the sender keeps seeing the
+		// delivered (gray) ticks instead of a read confirmation we didn't make.
+		// WhatsApp then reciprocally withholds others' read receipts from us.
+		if !readReceiptsEnabled() {
+			return nil
+		}
 		for _, msgID := range messageIDs {
 			msg, err := a.messageStore.GetMessageWithMedia(chatJID, msgID)
 			if err != nil {

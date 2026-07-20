@@ -15,12 +15,61 @@ const (
 		reply_to_message_id TEXT,
 		edited BOOLEAN DEFAULT FALSE,
 		forwarded BOOLEAN DEFAULT FALSE,
-		type INTEGER DEFAULT 0
+		type INTEGER DEFAULT 0,
+		status INTEGER DEFAULT 0
 	);
 		CREATE INDEX IF NOT EXISTS idx_messages_chat_jid ON messages(chat_jid);
 		CREATE INDEX IF NOT EXISTS idx_messages_sender_jid ON messages(sender_jid);
 		CREATE INDEX IF NOT EXISTS idx_messages_timestamp ON messages(timestamp DESC);
 		CREATE INDEX IF NOT EXISTS idx_messages_chat_cursor ON messages(chat_jid, timestamp DESC, message_id DESC);
+	`
+
+	// AddStatusColumn migrates pre-existing messages tables to carry the
+	// outgoing read-receipt status (0=none/sent, 2=delivered, 3=read/played).
+	AddStatusColumn = `
+	ALTER TABLE messages ADD COLUMN status INTEGER DEFAULT 0;
+	`
+
+	// UpdateMessageStatus advances a sent message's receipt status. The
+	// status < ? guard keeps it monotonic so a late "delivered" can never
+	// downgrade a message already marked "read".
+	UpdateMessageStatus = `
+	UPDATE messages
+	SET status = ?
+	WHERE message_id = ? AND is_from_me = TRUE AND status < ?
+	`
+
+	SelectMessageStatusByID = `
+	SELECT status FROM messages WHERE message_id = ? LIMIT 1
+	`
+
+	// Per-participant receipt state for our outgoing messages. In a group each
+	// recipient acknowledges independently; the message's displayed tick is the
+	// lowest level reached by *all* recipients, matching the official client
+	// (blue only once everyone has read). One row per (message, participant).
+	CreateMessageReceiptsTable = `
+	CREATE TABLE IF NOT EXISTS message_receipts (
+		message_id TEXT NOT NULL,
+		participant TEXT NOT NULL,
+		status INTEGER NOT NULL,
+		PRIMARY KEY (message_id, participant)
+	);
+	CREATE INDEX IF NOT EXISTS idx_message_receipts_message_id ON message_receipts(message_id);
+	`
+
+	// UpsertMessageReceipt records a participant's receipt, only ever advancing
+	// it (the conflict guard keeps a stale "delivered" from clobbering "read").
+	UpsertMessageReceipt = `
+	INSERT INTO message_receipts (message_id, participant, status)
+	VALUES (?, ?, ?)
+	ON CONFLICT(message_id, participant) DO UPDATE SET status = excluded.status
+	WHERE excluded.status > message_receipts.status
+	`
+
+	// CountMessageReceiptsAtLeast counts how many distinct participants have
+	// reached (at least) a given status for a message.
+	CountMessageReceiptsAtLeast = `
+	SELECT COUNT(*) FROM message_receipts WHERE message_id = ? AND status >= ?
 	`
 
 	InsertMessage = `

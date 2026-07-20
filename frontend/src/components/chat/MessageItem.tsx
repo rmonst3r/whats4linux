@@ -19,6 +19,8 @@ import clsx from "clsx"
 import { MessageMenu } from "./MessageMenu"
 import {
   ClockPendingIcon,
+  SingleTickIcon,
+  DoubleTickIcon,
   BlueTickIcon,
   ForwardedIcon,
   UserAvatar,
@@ -99,6 +101,15 @@ export function MessageItem({
   const content = message.Content
   const isSticker = !!content?.stickerMessage
   const isPending = (message as any).isPending || false
+  // Receipt status for our sent messages: 0/1 = sent (single tick),
+  // 2 = delivered (double gray), 3 = read/played (double blue).
+  const status = (message as any).status ?? 0
+  const renderTick = () => {
+    if (isPending) return <ClockPendingIcon />
+    if (status >= 3) return <BlueTickIcon />
+    if (status === 2) return <DoubleTickIcon />
+    return <SingleTickIcon />
+  }
   const isGroup = chatId.endsWith("@g.us")
   // Empty for @lid senders — those JIDs carry no phone number.
   const senderPhone = formatPhone(phoneFromJID(message.Info.Sender))
@@ -256,7 +267,7 @@ export function MessageItem({
     >
       {message.edited && <span>Edited</span>}
       <span>{timeStr}</span>
-      {isFromMe && (isPending ? <ClockPendingIcon /> : <BlueTickIcon />)}
+      {isFromMe && renderTick()}
     </span>
   )
 

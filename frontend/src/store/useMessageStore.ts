@@ -11,6 +11,7 @@ interface MessageStore {
   prependMessages: (chatId: string, messages: any[]) => void
   updateMessage: (chatId: string, message: any) => void
   removeMessage: (chatId: string, messageId: string) => void
+  setMessageStatus: (chatId: string, messageIds: string[], status: number) => void
   addReactionToMessage: (chatId: string, messageId: string, emoji: string, senderId: string) => void
   clearMessages: (chatId: string) => void
   trimOldMessages: (chatId: string, keepCount: number) => void
@@ -77,6 +78,20 @@ export const useMessageStore = create<MessageStore>()(
         state.messages[chatId] = list.filter(
           m => m.Info?.ID !== messageId && m.tempId !== messageId,
         )
+      }),
+
+    // Advance the read-receipt tick status for one or more outgoing messages.
+    // Monotonic: a late "delivered" never downgrades a message already "read".
+    setMessageStatus: (chatId, messageIds, status) =>
+      set(state => {
+        const list = state.messages[chatId]
+        if (!list) return
+        const ids = new Set(messageIds)
+        for (const msg of list) {
+          if (ids.has(msg.Info?.ID) && status > (msg.status ?? 0)) {
+            msg.status = status
+          }
+        }
       }),
 
     // Optimistically set/clear a sender's reaction on a message (empty emoji
