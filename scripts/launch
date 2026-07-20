@@ -1,0 +1,41 @@
+#!/bin/sh
+# Launch whats4linux with the NVIDIA/WebKit workaround.
+#
+# On NVIDIA GPUs the WebKit DMABUF renderer makes the app silently exit 1 with
+# no window, so this wrapper always exports WEBKIT_DISABLE_DMABUF_RENDERER=1
+# before starting. Paths resolve to the repo, so it runs from any directory.
+#
+# Usage:
+#   scripts/launch            launch the already-built binary
+#   scripts/launch --build    build first (wails build -tags webkit2_41), then launch
+#
+# Any extra arguments are forwarded to the binary.
+
+set -eu
+
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+REPO_DIR=$(cd -- "$SCRIPT_DIR/.." && pwd)
+BIN="$REPO_DIR/build/bin/whats4linux"
+
+if [ "${1:-}" = "--build" ]; then
+	shift
+	# wails may live in ~/go/bin rather than on PATH.
+	WAILS=$(command -v wails 2>/dev/null || echo "$HOME/go/bin/wails")
+	if [ ! -x "$WAILS" ]; then
+		echo "wails not found on PATH or in ~/go/bin" >&2
+		exit 1
+	fi
+	# -tags webkit2_41: this system has webkit2gtk-4.1, not 4.0.
+	( cd "$REPO_DIR" && "$WAILS" build -tags webkit2_41 )
+fi
+
+if [ ! -x "$BIN" ]; then
+	echo "whats4linux is not built yet:" >&2
+	echo "  $BIN" >&2
+	echo "Run: scripts/launch --build" >&2
+	exit 1
+fi
+
+# NVIDIA: without this the window never appears and the process exits 1.
+export WEBKIT_DISABLE_DMABUF_RENDERER=1
+exec "$BIN" "$@"
