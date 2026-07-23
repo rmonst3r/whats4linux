@@ -493,6 +493,19 @@ func (a *Api) mainEventHandler(evt any) {
 			return
 		}
 
+		// Group reactions (and reactions to media) arrive encrypted as an
+		// encReactionMessage. Decrypt it into a normal ReactionMessage so the
+		// reaction handling below applies it to the target message instead of
+		// storing a blank row that renders as "Unsupported Message Type".
+		if v.Message.GetEncReactionMessage() != nil {
+			decrypted, err := a.waClient.DecryptReaction(a.ctx, v)
+			if err != nil {
+				log.Println("Failed to decrypt reaction:", err)
+				return
+			}
+			v.Message.ReactionMessage = decrypted
+		}
+
 		// Non-edit protocol messages (app-state key shares, history-sync
 		// notifications, ephemeral-timer changes, …) carry no user-visible
 		// content; storing them would litter chats with blank rows — the
