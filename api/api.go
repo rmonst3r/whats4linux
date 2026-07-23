@@ -175,7 +175,6 @@ func (a *Api) getActiveChat() string {
 	return ""
 }
 
-
 // emitUnread broadcasts a chat's freshly computed unread state so every view
 // (the open list, a cold start via GetChatList) agrees on the badge.
 func (a *Api) emitUnread(chatID string, u store.ChatUnread) {

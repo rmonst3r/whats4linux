@@ -926,6 +926,7 @@ func (a *Api) SendMessage(chatJID string, content MessageContent) (string, error
 
 	return resp.ID, nil
 }
+
 // readReceiptsEnabled reports whether the user currently allows sending read
 // receipts. It defaults to true when the setting is missing or malformed, which
 // matches the frontend default and WhatsApp's out-of-the-box behaviour.

@@ -42,7 +42,7 @@ func (a *Api) ToggleChatPin(jidStr string, pinned bool) error {
 		return err
 	}
 	runtime.EventsEmit(a.ctx, "wa:chat_list_refresh")
-	if err := a.waClient.SendAppState(a.ctx, appstate.BuildPin(jid, pinned)); err != nil {
+	if err := a.waClient.SendAppState(a.ctx, appstate.BuildPin(a.appStateTarget(jid), pinned)); err != nil {
 		log.Println("ToggleChatPin: app state sync failed (kept local):", err)
 		a.startBackground(a.resyncAppState)
 	}
@@ -61,11 +61,26 @@ func (a *Api) ToggleChatArchive(jidStr string, archived bool) error {
 		return err
 	}
 	runtime.EventsEmit(a.ctx, "wa:chat_list_refresh")
-	if err := a.waClient.SendAppState(a.ctx, appstate.BuildArchive(jid, archived, time.Time{}, nil)); err != nil {
+	if err := a.waClient.SendAppState(a.ctx, appstate.BuildArchive(a.appStateTarget(jid), archived, time.Time{}, nil)); err != nil {
 		log.Println("ToggleChatArchive: app state sync failed (kept local):", err)
 		a.startBackground(a.resyncAppState)
 	}
 	return nil
+}
+
+// appStateTarget returns the JID to key a pin/archive app-state mutation by.
+// WhatsApp stores these for 1:1 chats under the contact's LID, not their phone
+// number, so sending under the PN creates a separate entry the phone ignores
+// (and unpin/unarchive never syncs back). Groups (and chats without a known
+// LID) are used as-is.
+func (a *Api) appStateTarget(jid types.JID) types.JID {
+	if jid.Server != types.DefaultUserServer {
+		return jid
+	}
+	if lid, err := a.waClient.Store.LIDs.GetLIDForPN(a.ctx, jid); err == nil && !lid.IsEmpty() {
+		return lid
+	}
+	return jid
 }
 
 func (a *Api) GetChatList() ([]ChatElement, error) {
