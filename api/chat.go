@@ -16,6 +16,8 @@ type ChatElement struct {
 	Pinned        bool  `json:"pinned"`
 	PinnedAt      int64 `json:"pinned_at"`
 	Archived      bool  `json:"archived"`
+	UnreadCount   int   `json:"unread_count"`
+	MarkedUnread  bool  `json:"marked_unread"`
 	Contact
 
 	// Community linkage (populated for groups that belong to a community).
@@ -70,6 +72,7 @@ func (a *Api) GetChatList() ([]ChatElement, error) {
 	cmList := a.messageStore.GetChatList()
 	pinnedChats := a.messageStore.GetPinnedChats()
 	archivedChats := a.messageStore.GetArchivedChats()
+	unread := a.messageStore.GetAllUnread()
 	ce := make([]ChatElement, len(cmList))
 	for i, cm := range cmList {
 		var fc Contact
@@ -124,6 +127,7 @@ func (a *Api) GetChatList() ([]ChatElement, error) {
 		}
 		pinnedAt, pinned := pinnedChats[cm.JID.String()]
 		_, archived := archivedChats[cm.JID.String()]
+		u := unread[a.canonicalJID(cm.JID)]
 		ce[i] = ChatElement{
 			LatestMessage:     cm.MessageText,
 			LatestTS:          cm.MessageTime,
@@ -131,6 +135,8 @@ func (a *Api) GetChatList() ([]ChatElement, error) {
 			Pinned:            pinned,
 			PinnedAt:          pinnedAt,
 			Archived:          archived,
+			UnreadCount:       u.Count,
+			MarkedUnread:      u.MarkedUnread,
 			Contact:           fc,
 			ParentJID:         parentJID,
 			ParentName:        parentName,

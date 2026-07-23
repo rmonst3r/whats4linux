@@ -6,6 +6,9 @@ export interface ChatItem {
   timestamp?: number
   avatar?: string
   unreadCount?: number
+  // Deliberately flagged unread on some device despite no unread messages
+  // (WhatsApp's "mark as unread"). Rendered as a dot rather than a count.
+  markedUnread?: boolean
   sender?: string
   pinned?: boolean
   archived?: boolean

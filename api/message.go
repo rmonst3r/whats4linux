@@ -947,6 +947,15 @@ func (a *Api) MarkRead(chatJID string, messageIDs []string, Type string) error {
 		return err
 	}
 	if Type == "read-msg" {
+		// Reading here advances our read watermark regardless of the read-receipt
+		// privacy setting: withholding a receipt from the sender doesn't mean the
+		// messages are still unread for us. Advance to the newest incoming
+		// message so the whole chat reads as read.
+		canonical := a.canonicalJID(parsedChatJID)
+		if ts := a.messageStore.NewestIncomingTimestamp(canonical); ts > 0 {
+			a.emitUnread(canonical, a.messageStore.AdvanceReadWatermark(canonical, ts))
+		}
+
 		// Honour the read-receipt privacy setting. When it's off we never tell
 		// WhatsApp we've seen the message, so the sender keeps seeing the
 		// delivered (gray) ticks instead of a read confirmation we didn't make.

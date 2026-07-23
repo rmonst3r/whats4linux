@@ -210,6 +210,31 @@ func NewMessageStore() (*MessageStore, error) {
 		if err != nil {
 			return err
 		}
+		if _, err = tx.Exec(query.CreateChatReadStateTable); err != nil {
+			return err
+		}
+		if _, err = tx.Exec(query.CreateAppMetaTable); err != nil {
+			return err
+		}
+		// Drop the superseded counter table from the earlier unread attempt.
+		if _, err = tx.Exec(`DROP TABLE IF EXISTS chat_unread`); err != nil {
+			return err
+		}
+		// One-time cleanup: an abandoned approach seeded chat_read_state from a
+		// full app-state sync, which left stale watermarks and REMOVE tombstones
+		// recorded as mark-as-unread. If its marker key is present, wipe the
+		// seeded rows so read state rebuilds from trustworthy signals only.
+		var badSeed int
+		if err := tx.QueryRow(
+			`SELECT COUNT(*) FROM app_meta WHERE key = 'read_state_baseline_v1'`,
+		).Scan(&badSeed); err == nil && badSeed > 0 {
+			if _, err = tx.Exec(`DELETE FROM chat_read_state`); err != nil {
+				return err
+			}
+			if _, err = tx.Exec(`DELETE FROM app_meta WHERE key = 'read_state_baseline_v1'`); err != nil {
+				return err
+			}
+		}
 		if _, err = tx.Exec(query.CreateLinkPreviewsTable); err != nil {
 			return err
 		}
@@ -1047,6 +1072,26 @@ func (ms *MessageStore) chatListFromQuery(q string) []ChatMessage {
 		if text.Valid {
 			messageText = text.String
 		}
+		// A media message with no caption previews as its kind, like the
+		// official client, rather than a blank line in the chat list.
+		if messageText == "" && msgType.Valid {
+			switch mtypes.MediaType(msgType.Int32) {
+			case mtypes.MediaTypeImage:
+				messageText = "📷 Photo"
+			case mtypes.MediaTypeVideo:
+				messageText = "🎥 Video"
+			case mtypes.MediaTypeAudio:
+				messageText = "🎤 Voice message"
+			case mtypes.MediaTypeDocument:
+				if fileName.Valid && fileName.String != "" {
+					messageText = "📄 " + fileName.String
+				} else {
+					messageText = "📄 Document"
+				}
+			case mtypes.MediaTypeSticker:
+				messageText = "Sticker"
+			}
+		}
 
 		chatMsg := ChatMessage{
 			JID:         jid,
@@ -1735,6 +1780,160 @@ func (ms *MessageStore) RecordParticipantReceipt(messageID, participant string, 
 
 	changed = ms.SetMessageStatus(messageID, aggregate)
 	return aggregate, changed
+}
+
+// ChatUnread is the unread state for a single chat, derived from the read
+// watermark against stored messages. Mirrored to the frontend for the badge.
+type ChatUnread struct {
+	Count        int  `json:"count"`
+	MarkedUnread bool `json:"markedUnread"`
+}
+
+// AdvanceReadWatermark moves a chat's read watermark forward to ts (never
+// backward) and clears the mark-as-unread flag. Used for reads that happen
+// here, on another device, or via incremental app-state deltas. Returns the
+// recomputed unread state.
+func (ms *MessageStore) AdvanceReadWatermark(chatJID string, ts int64) ChatUnread {
+	if chatJID == "" {
+		return ChatUnread{}
+	}
+	_ = ms.runSync(func(tx *sql.Tx) error {
+		_, err := tx.Exec(query.SetReadWatermarkMax, chatJID, ts)
+		return err
+	})
+	return ms.ComputeUnread(chatJID)
+}
+
+// SetMarkedUnread flags (or, when advancing the watermark elsewhere, is cleared
+// for) a chat as explicitly unread without unread messages.
+func (ms *MessageStore) SetMarkedUnread(chatJID string) ChatUnread {
+	if chatJID == "" {
+		return ChatUnread{}
+	}
+	_ = ms.runSync(func(tx *sql.Tx) error {
+		_, err := tx.Exec(query.SetMarkedUnread, chatJID)
+		return err
+	})
+	return ms.ComputeUnread(chatJID)
+}
+
+// RegisterIncomingUnread ensures a chat that isn't being tracked yet gets a
+// watermark placed just below a newly-arrived incoming message (so only that
+// message and later ones count as unread, not its whole history), then returns
+// the recomputed unread state. A chat that already has a watermark is left
+// untouched and simply recomputed.
+func (ms *MessageStore) RegisterIncomingUnread(chatJID string, newMsgTS int64) ChatUnread {
+	if chatJID == "" {
+		return ChatUnread{}
+	}
+	_ = ms.runSync(func(tx *sql.Tx) error {
+		_, err := tx.Exec(query.SeedWatermarkForNewMessage, chatJID, chatJID, newMsgTS)
+		return err
+	})
+	return ms.ComputeUnread(chatJID)
+}
+
+// ComputeUnread derives a chat's unread state from its watermark.
+func (ms *MessageStore) ComputeUnread(chatJID string) ChatUnread {
+	var u ChatUnread
+	if err := ms.db.QueryRow(query.SelectUnreadCountForChat, chatJID).Scan(&u.Count); err != nil {
+		return ChatUnread{}
+	}
+	var marked sql.NullBool
+	if err := ms.db.QueryRow(query.SelectMarkedUnreadForChat, chatJID).Scan(&marked); err == nil {
+		u.MarkedUnread = marked.Bool
+	}
+	return u
+}
+
+// GetAllUnread returns unread state for every chat that has any (a positive
+// count or the mark-as-unread flag), keyed by chat JID, for the chat list.
+func (ms *MessageStore) GetAllUnread() map[string]ChatUnread {
+	out := make(map[string]ChatUnread)
+	rows, err := ms.db.Query(query.SelectAllUnreadCounts)
+	if err == nil {
+		for rows.Next() {
+			var jid string
+			var count int
+			if err := rows.Scan(&jid, &count); err != nil {
+				continue
+			}
+			if count > 0 {
+				out[jid] = ChatUnread{Count: count}
+			}
+		}
+		rows.Close()
+	}
+	mrows, err := ms.db.Query(query.SelectMarkedUnreadChats)
+	if err == nil {
+		for mrows.Next() {
+			var jid string
+			if err := mrows.Scan(&jid); err != nil {
+				continue
+			}
+			u := out[jid]
+			u.MarkedUnread = true
+			out[jid] = u
+		}
+		mrows.Close()
+	}
+	return out
+}
+
+// SeedUnreadFromHistorySync sets a chat's read state from the server's
+// link-time unread count: the watermark is placed so exactly the newest
+// `count` stored incoming messages are unread. Must run after the
+// conversation's messages have been stored.
+//
+// Only a positive signal (count > 0 or markedUnread) overwrites: WhatsApp
+// re-delivers the same conversation across several sync batches, and later
+// batches omit the unread field (defaulting to 0) — letting that overwrite
+// would wipe the correct seed from the bootstrap batch, collapsing every
+// badge to "read". A zero therefore only fills in a missing row.
+func (ms *MessageStore) SeedUnreadFromHistorySync(chatJID string, count int, markedUnread bool) {
+	if chatJID == "" {
+		return
+	}
+	mu := 0
+	if markedUnread {
+		mu = 1
+	}
+	_ = ms.runSync(func(tx *sql.Tx) error {
+		if count <= 0 && !markedUnread {
+			var newest sql.NullInt64
+			_ = tx.QueryRow(query.SelectNewestIncomingTS, chatJID).Scan(&newest)
+			_, err := tx.Exec(query.SeedChatReadStateIfMissing, chatJID, newest.Int64)
+			return err
+		}
+		var wm int64
+		if count > 0 {
+			// Watermark just below the count-th newest incoming message. If we
+			// hold fewer messages than the server's count, leave it at 0 so
+			// everything stored counts as unread (best effort).
+			var nth sql.NullInt64
+			if err := tx.QueryRow(query.SelectNthNewestIncomingTS, chatJID, count-1).Scan(&nth); err == nil && nth.Valid {
+				wm = nth.Int64 - 1
+			}
+		}
+		log.Printf("History sync seed: %s unread=%d marked=%v watermark=%d", chatJID, count, markedUnread, wm)
+		_, err := tx.Exec(query.ReplaceChatReadState, chatJID, wm, mu)
+		return err
+	})
+}
+
+// NewestIncomingTimestamp returns the Unix-second timestamp of the newest
+// incoming message in a chat, or 0 if there are none. Used to advance the
+// watermark to "fully read" when the user opens a chat here.
+func (ms *MessageStore) NewestIncomingTimestamp(chatJID string) int64 {
+	var ts sql.NullInt64
+	err := ms.db.QueryRow(
+		`SELECT MAX(timestamp) FROM messages WHERE chat_jid = ? AND is_from_me = 0`,
+		chatJID,
+	).Scan(&ts)
+	if err != nil {
+		return 0
+	}
+	return ts.Int64
 }
 
 // countReceiptsAtLeast counts distinct participants who have reached at least

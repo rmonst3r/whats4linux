@@ -25,6 +25,7 @@ import (
 	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/appstate"
 	"go.mau.fi/whatsmeow/proto/waE2E"
+	"go.mau.fi/whatsmeow/proto/waHistorySync"
 	"go.mau.fi/whatsmeow/store/sqlstore"
 	"go.mau.fi/whatsmeow/types"
 	"go.mau.fi/whatsmeow/types/events"
@@ -53,6 +54,10 @@ type Api struct {
 	windowFocused       atomic.Bool
 	groupRepairInFlight atomic.Bool
 	appStateResync      atomic.Bool
+	// activeChat is the canonical JID of the chat currently open in the UI, or
+	// "" when none. Used to suppress the unread badge for the chat the user is
+	// already looking at. Stored as a string via atomic.Value.
+	activeChat atomic.Value
 
 	// Voice-note recording (ffmpeg capturing the system mic; see message.go).
 	voiceMu   sync.Mutex
@@ -144,6 +149,67 @@ var htmlTagRE = regexp.MustCompile(`<[^>]*>`)
 // backend only raises notifications while the window is in the background.
 func (a *Api) SetWindowFocused(focused bool) {
 	a.windowFocused.Store(focused)
+}
+
+// SetActiveChat is called by the frontend whenever the open chat changes (the
+// JID it opened, or "" when the list is showing). The backend uses it to skip
+// bumping the unread counter for a chat the user is already viewing, so an
+// incoming message there never flashes a badge.
+func (a *Api) SetActiveChat(chatJID string) {
+	if chatJID == "" {
+		a.activeChat.Store("")
+		return
+	}
+	if parsed, err := types.ParseJID(chatJID); err == nil {
+		a.activeChat.Store(a.canonicalJID(parsed))
+	} else {
+		a.activeChat.Store(chatJID)
+	}
+}
+
+// getActiveChat returns the canonical JID of the currently open chat, or "".
+func (a *Api) getActiveChat() string {
+	if v, ok := a.activeChat.Load().(string); ok {
+		return v
+	}
+	return ""
+}
+
+
+// emitUnread broadcasts a chat's freshly computed unread state so every view
+// (the open list, a cold start via GetChatList) agrees on the badge.
+func (a *Api) emitUnread(chatID string, u store.ChatUnread) {
+	runtime.EventsEmit(a.ctx, "wa:unread_update", map[string]any{
+		"chatId":       chatID,
+		"unreadCount":  u.Count,
+		"markedUnread": u.MarkedUnread,
+	})
+}
+
+// handleMarkChatAsRead applies a live markChatAsRead app-state delta (the
+// user's explicit mark-as-read / mark-as-unread on another device) to our read
+// watermark.
+//
+// whatsmeow dispatches this event for REMOVE mutations (tombstones) too, with
+// a nil Action — and a nil Action's GetRead() is false, indistinguishable from
+// a genuine "mark as unread" unless checked. Historical snapshots are full of
+// such tombstones, so they must be ignored, not treated as unread flags.
+func (a *Api) handleMarkChatAsRead(v *events.MarkChatAsRead) {
+	if v.Action == nil {
+		return
+	}
+	chatID := a.canonicalJID(v.JID)
+	if !v.Action.GetRead() {
+		a.emitUnread(chatID, a.messageStore.SetMarkedUnread(chatID))
+		return
+	}
+	// Prefer the action's own read-up-to timestamp; fall back to the mutation
+	// timestamp when the range is absent.
+	ts := v.Action.GetMessageRange().GetLastMessageTimestamp()
+	if ts == 0 {
+		ts = v.Timestamp.Unix()
+	}
+	a.emitUnread(chatID, a.messageStore.AdvanceReadWatermark(chatID, ts))
 }
 
 // notifyIncoming raises a desktop notification for an incoming message when the
@@ -427,6 +493,14 @@ func (a *Api) mainEventHandler(evt any) {
 			return
 		}
 
+		// Non-edit protocol messages (app-state key shares, history-sync
+		// notifications, ephemeral-timer changes, …) carry no user-visible
+		// content; storing them would litter chats with blank rows — the
+		// pairing handshake alone produces a dozen in the self-chat.
+		if protoMsg := v.Message.GetProtocolMessage(); protoMsg != nil && protoMsg.GetType() != waE2E.ProtocolMessage_MESSAGE_EDIT {
+			return
+		}
+
 		parsedHTML := a.processMessageText(v.Message)
 
 		// Handle message edits: re-parse the edited content
@@ -464,6 +538,27 @@ func (a *Api) mainEventHandler(evt any) {
 		if messageID != "" && !v.Info.IsFromMe && !isFeed && v.Message.GetReactionMessage() == nil && !a.windowFocused.Load() &&
 			store.GetNotificationsEnabled() && !a.messageStore.IsChatMuted(v.Info.Chat.String()) {
 			a.startBackground(func() { a.notifyIncoming(v, parsedHTML) })
+		}
+
+		// Reflect a genuine new incoming message in the unread badge. Unread is
+		// derived from the read watermark, so a stored message newer than the
+		// watermark counts automatically — we just recompute and push it. If the
+		// user already has this chat open, advance the watermark to this message
+		// instead so it stays read (no flash). Edits, reactions, feeds and our
+		// own messages never affect unread.
+		isEdit := false
+		if pm := v.Message.GetProtocolMessage(); pm != nil && pm.GetType() == waE2E.ProtocolMessage_MESSAGE_EDIT {
+			isEdit = true
+		}
+		if messageID != "" && !v.Info.IsFromMe && !isFeed && !isEdit && v.Message.GetReactionMessage() == nil {
+			chatID := a.canonicalJID(v.Info.Chat)
+			if chatID == a.getActiveChat() {
+				// User is looking at this chat: keep it read.
+				a.emitUnread(chatID, a.messageStore.AdvanceReadWatermark(chatID, v.Info.Timestamp.Unix()))
+			} else {
+				// Start (or continue) tracking this chat's unread from here.
+				a.emitUnread(chatID, a.messageStore.RegisterIncomingUnread(chatID, v.Info.Timestamp.Unix()))
+			}
 		}
 
 		if reaction := v.Message.GetReactionMessage(); reaction != nil {
@@ -553,6 +648,10 @@ func (a *Api) mainEventHandler(evt any) {
 		a.waClient.SendPresence(a.ctx, types.PresenceUnavailable)
 	case *events.Receipt:
 		a.handleReceipt(v)
+	case *events.MarkChatAsRead:
+		// Live app-state delta: the user explicitly marked this chat read or
+		// unread on another device. Mirror it against our watermark.
+		a.handleMarkChatAsRead(v)
 	default:
 		// Ignore other events for now
 	}
@@ -564,9 +663,26 @@ func (a *Api) mainEventHandler(evt any) {
 // group the tick only advances once *every* recipient reaches that level, so
 // each participant's receipt is recorded independently and the message's
 // aggregate status is recomputed against the group size. State is persisted so
-// ticks survive a restart. Receipts that don't move ticks (read-self, sender,
-// retry, server errors, our own devices) are ignored.
+// ticks survive a restart.
+//
+// Receipts from our own devices are the cross-device read signal instead: they
+// advance the chat's read watermark. Crucially that includes read-self /
+// played-self, which is what the phone sends when read receipts are disabled
+// in privacy settings — dropping those would silently break unread sync for
+// exactly the users who toggled that setting. These receipts are also replayed
+// from the server's offline queue on reconnect, which is how reads done on the
+// phone while this client was closed catch up.
 func (a *Api) handleReceipt(v *events.Receipt) {
+	// Cross-device self reads: another of our devices read this chat up to
+	// v.Timestamp. Advance the watermark; anything newer stays unread. Not an
+	// outgoing-tick signal, so stop here.
+	if v.Type == types.ReceiptTypeReadSelf || v.Type == types.ReceiptTypePlayedSelf ||
+		(v.IsFromMe && (v.Type == types.ReceiptTypeRead || v.Type == types.ReceiptTypePlayed)) {
+		chatID := a.canonicalJID(v.Chat)
+		a.emitUnread(chatID, a.messageStore.AdvanceReadWatermark(chatID, v.Timestamp.Unix()))
+		return
+	}
+
 	var status int
 	switch v.Type {
 	case types.ReceiptTypeDelivered:
@@ -642,6 +758,13 @@ func (a *Api) processHistorySync(v *events.HistorySync) {
 	if len(conversations) == 0 {
 		return
 	}
+	// Only link-time batches carry a trustworthy per-conversation unread count;
+	// an on-demand batch (scrolling back in history) defaults to 0 and would
+	// wrongly mark chats read.
+	syncType := v.Data.GetSyncType()
+	seedUnread := syncType == waHistorySync.HistorySync_INITIAL_BOOTSTRAP ||
+		syncType == waHistorySync.HistorySync_RECENT ||
+		syncType == waHistorySync.HistorySync_FULL
 	stored := 0
 	for _, conv := range conversations {
 		chatJID, err := types.ParseJID(conv.GetID())
@@ -663,12 +786,23 @@ func (a *Api) processHistorySync(v *events.HistorySync) {
 			if parsedMsg.Message == nil {
 				continue
 			}
+			// Skip contentless protocol messages, same as the live path.
+			if pm := parsedMsg.Message.GetProtocolMessage(); pm != nil && pm.GetType() != waE2E.ProtocolMessage_MESSAGE_EDIT {
+				continue
+			}
 			parsedHTML := a.processMessageText(parsedMsg.Message)
 			if a.messageStore.ProcessMessageEvent(a.ctx, a.waClient.Store.LIDs, parsedMsg, parsedHTML) != "" {
 				stored++
 			}
 		}
+		// Seed the read watermark from the phone's unread count for this chat,
+		// after its messages are stored so the count maps onto real rows. This
+		// is what makes a re-link reproduce the phone's badges exactly.
+		if seedUnread {
+			a.messageStore.SeedUnreadFromHistorySync(
+				a.canonicalJID(chatJID), int(conv.GetUnreadCount()), conv.GetMarkedAsUnread())
+		}
 	}
-	log.Printf("History sync: stored %d messages from %d conversations", stored, len(conversations))
+	log.Printf("History sync (%s): stored %d messages from %d conversations", syncType, stored, len(conversations))
 	runtime.EventsEmit(a.ctx, "wa:chat_list_refresh")
 }

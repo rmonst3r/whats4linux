@@ -8,6 +8,7 @@ import {
   ToggleChatPin,
   ToggleChatArchive,
   SearchChatJIDs,
+  SetActiveChat,
 } from "../../wailsjs/go/api/Api"
 import { api } from "../../wailsjs/go/models"
 import { EventsOn } from "../../wailsjs/runtime/runtime"
@@ -326,6 +327,11 @@ const ChatListItemContent = memo(
               <span className="shrink-0 min-w-5 h-5 px-1.5 flex items-center justify-center rounded-full bg-[#21c063] text-[#0a1014] text-xs font-semibold">
                 {chat.unreadCount > 99 ? "99+" : chat.unreadCount}
               </span>
+            ) : chat.markedUnread ? (
+              <span
+                className="shrink-0 w-3 h-3 rounded-full bg-[#21c063]"
+                aria-label="Unread"
+              />
             ) : null}
           </div>
         </div>
@@ -418,6 +424,7 @@ export function ChatListScreen({ onOpenSettings }: ChatListScreenProps) {
   const selectChat = useChatStore(state => state.selectChat)
   const setSearchTerm = useChatStore(state => state.setSearchTerm)
   const clearUnreadCount = useChatStore(state => state.clearUnreadCount)
+  const setUnread = useChatStore(state => state.setUnread)
   const updateChatLastMessage = useChatStore(state => state.updateChatLastMessage)
   const updateSingleChat = useChatStore(state => state.updateSingleChat)
   const getChat = useChatStore(state => state.getChat)
@@ -472,12 +479,21 @@ export function ChatListScreen({ onOpenSettings }: ChatListScreenProps) {
   // When opening a group from a community home, remember it so Back returns there.
   const [communityReturn, setCommunityReturn] = useState<api.CommunitySummary | null>(null)
 
+  // Keep the backend's notion of the open chat in sync, including deselection
+  // (view switch, back button) so it resumes badging once nothing is open.
+  useEffect(() => {
+    SetActiveChat(selectedChatId || "").catch(() => {})
+  }, [selectedChatId])
+
   const handleChatSelect = useCallback(
     (chat: ChatItem) => {
       setSelectedCommunity(null)
       setCommunityReturn(null)
       selectChat(chat)
       clearUnreadCount(chat.id)
+      // Tell the backend which chat is open so it won't badge messages the user
+      // is actively reading.
+      SetActiveChat(chat.id).catch(() => {})
     },
     [selectChat, clearUnreadCount],
   )
@@ -534,6 +550,8 @@ export function ChatListScreen({ onOpenSettings }: ChatListScreenProps) {
             type: isGroup ? "group" : "contact",
             timestamp: c.LatestTS,
             avatar: avatar,
+            unreadCount: c.unread_count || 0,
+            markedUnread: c.marked_unread || false,
             sender: senderName || "",
             pinned: c.pinned || false,
             archived: c.archived || false,
@@ -747,11 +765,8 @@ export function ChatListScreen({ onOpenSettings }: ChatListScreenProps) {
         reaction?: string
         isFromMe?: boolean
       }) => {
-        // Mark an incoming message unread unless it belongs to the chat that's
-        // currently open. Read state via getState() to avoid a stale closure.
-        if (!data.isFromMe && useChatStore.getState().selectedChatId !== data.chatId) {
-          useChatStore.getState().incrementUnreadCount(data.chatId)
-        }
+        // Unread is driven entirely by the backend now (wa:unread_update),
+        // which is authoritative and mirrors read state from other devices.
 
         if (!initialFetchDoneRef.current) {
           // If we haven't done initial fetch, do a full fetch
@@ -797,6 +812,15 @@ export function ChatListScreen({ onOpenSettings }: ChatListScreenProps) {
       }
     })
 
+    // Authoritative unread updates from the backend (new message counted, chat
+    // read here or on another linked device, mark-as-unread synced).
+    const unsubUnread = EventsOn(
+      "wa:unread_update",
+      (data: { chatId: string; unreadCount: number; markedUnread: boolean }) => {
+        setUnread(data.chatId, data.unreadCount || 0, data.markedUnread || false)
+      },
+    )
+
     // Fallback: listen for generic updates that require full refresh
     const unsubRefresh = EventsOn("wa:chat_list_refresh", () => {
       setTimeout(fetchChats, 500)
@@ -807,9 +831,10 @@ export function ChatListScreen({ onOpenSettings }: ChatListScreenProps) {
       clearTimeout(timeout)
       unsubNewMessage()
       unsubPictureUpdate()
+      unsubUnread()
       unsubRefresh()
     }
-  }, [fetchChats, getChat, loadSelfAvatar, updateChatLastMessage, updateSingleChat])
+  }, [fetchChats, getChat, loadSelfAvatar, setUnread, updateChatLastMessage, updateSingleChat])
 
   return (
     <div className="flex h-screen bg-light-secondary dark:bg-black overflow-hidden">

@@ -26,7 +26,7 @@ interface ChatStore {
   ) => void
   updateSingleChat: (chatId: string, updates: Partial<ChatItem>) => void
   resortChats: () => void
-  incrementUnreadCount: (chatId: string) => void
+  setUnread: (chatId: string, count: number, markedUnread: boolean) => void
   clearUnreadCount: (chatId: string) => void
   getChat: (chatId: string) => ChatItem | undefined
 }
@@ -45,13 +45,10 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       const newChatsById = new Map<string, ChatItem>()
 
       for (const chat of chats) {
-        // Preserve unread counts across a full refetch; the rebuilt items from
-        // the backend don't carry unread state.
-        const prev = state.chatsById.get(chat.id)
-        newChatsById.set(
-          chat.id,
-          prev?.unreadCount ? { ...chat, unreadCount: prev.unreadCount } : chat,
-        )
+        // The backend is authoritative for unread state (persisted in
+        // messages.db and seeded from the server), so the rebuilt items already
+        // carry the correct count — no need to preserve the previous value.
+        newChatsById.set(chat.id, chat)
       }
 
       const newChatIds = sortChatItems([...newChatsById.values()]).map(c => c.id)
@@ -107,16 +104,18 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       return { chatsById: newChatsById, chatIds: newChatIds }
     }),
 
-  incrementUnreadCount: chatId =>
+  // Apply an absolute unread state pushed by the backend (wa:unread_update).
+  // Absolute rather than incremental so every device agrees on the badge.
+  setUnread: (chatId, count, markedUnread) =>
     set(state => {
       const existingChat = state.chatsById.get(chatId)
       if (!existingChat) return state
+      if (existingChat.unreadCount === count && !!existingChat.markedUnread === markedUnread) {
+        return state
+      }
 
       const newChatsById = new Map(state.chatsById)
-      newChatsById.set(chatId, {
-        ...existingChat,
-        unreadCount: (existingChat.unreadCount || 0) + 1,
-      })
+      newChatsById.set(chatId, { ...existingChat, unreadCount: count, markedUnread })
 
       return { chatsById: newChatsById }
     }),
@@ -127,7 +126,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       if (!existingChat) return state
 
       const newChatsById = new Map(state.chatsById)
-      newChatsById.set(chatId, { ...existingChat, unreadCount: 0 })
+      newChatsById.set(chatId, { ...existingChat, unreadCount: 0, markedUnread: false })
 
       return { chatsById: newChatsById }
     }),
