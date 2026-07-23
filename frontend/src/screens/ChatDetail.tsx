@@ -223,13 +223,6 @@ export function ChatDetail({ chatId, chatName, chatAvatar, onBack, initialSearch
     [chatId, setMessages],
   )
 
-  const handleQuotedClick = useCallback(
-    (messageId: string) => {
-      jumpToMessage(messageId, false)
-    },
-    [jumpToMessage],
-  )
-
   // After a windowed jump, scroll to the target once it has rendered.
   useEffect(() => {
     const id = pendingJumpRef.current
