@@ -3,10 +3,12 @@ package api
 import (
 	"html"
 	"strings"
+	"time"
 
 	"github.com/lugvitc/whats4linux/internal/misc"
 	"github.com/lugvitc/whats4linux/internal/settings"
 	"github.com/lugvitc/whats4linux/internal/store"
+	"github.com/wailsapp/wails/v2/pkg/runtime"
 	"go.mau.fi/whatsmeow/types"
 )
 
@@ -32,6 +34,22 @@ func (a *Api) SetCustomJS(js string) error {
 
 func (a *Api) Reinitialize() error {
 	return a.cw.Initialise(a.waClient)
+}
+
+// Logout unlinks this device from the WhatsApp account: the server removes it
+// from Linked Devices and whatsmeow wipes the local session. On success the
+// app quits (after a short delay so the frontend can show a goodbye note);
+// the next launch starts fresh at the QR screen for re-linking. If the server
+// request fails nothing is deleted, so the session stays usable.
+func (a *Api) Logout() error {
+	if err := a.waClient.Logout(a.ctx); err != nil {
+		return err
+	}
+	go func() {
+		time.Sleep(1500 * time.Millisecond)
+		runtime.Quit(a.ctx)
+	}()
+	return nil
 }
 
 func (a *Api) SaveSettings(s map[string]any) error {
